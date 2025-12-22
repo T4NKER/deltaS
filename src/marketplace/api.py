@@ -104,16 +104,60 @@ async def create_dataset(
     current_user: User = Depends(get_current_seller),
     db: Session = Depends(get_db)
 ):
+    from deltalake import DeltaTable
+    from src.seller.watermarking import detect_anchor_columns_from_schema
+    from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
+    
+    anchor_columns = dataset_data.anchor_columns if dataset_data.anchor_columns and dataset_data.anchor_columns.strip() else None
+    
     dataset = Dataset(
         name=dataset_data.name,
         description=dataset_data.description,
         table_path=dataset_data.table_path,
         price=dataset_data.price,
         is_public=dataset_data.is_public,
-        seller_id=current_user.id
+        seller_id=current_user.id,
+        anchor_columns=anchor_columns
     )
     
     db.add(dataset)
+    db.flush()
+    
+    if not dataset.anchor_columns:
+        try:
+            bucket_name = get_bucket_name()
+            table_path = get_full_s3_path(bucket_name, dataset_data.table_path)
+            storage_options = get_delta_storage_options()
+            delta_table = DeltaTable(table_path, storage_options=storage_options)
+            arrow_dataset = delta_table.to_pyarrow_dataset()
+            schema = arrow_dataset.schema
+            
+            sensitive_cols = []
+            if dataset.sensitive_columns:
+                import json
+                try:
+                    sensitive_cols = json.loads(dataset.sensitive_columns) if isinstance(dataset.sensitive_columns, str) else dataset.sensitive_columns
+                except:
+                    pass
+            
+            anchor_cols = detect_anchor_columns_from_schema(schema, sensitive_columns=sensitive_cols)
+            if not anchor_cols:
+                raise ValueError("Could not detect suitable anchor columns from table schema")
+            dataset.anchor_columns = ','.join(anchor_cols)
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to configure anchor columns for dataset. Table may not exist or be accessible. Error: {str(e)}"
+            )
+    
+    if not dataset.anchor_columns:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Dataset anchor_columns must be configured. Please ensure the table exists and is accessible."
+        )
+    
     db.commit()
     db.refresh(dataset)
     return dataset

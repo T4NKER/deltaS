@@ -30,6 +30,7 @@ class DatasetCreate(BaseModel):
     table_path: str
     price: float = 0.0
     is_public: bool = False
+    anchor_columns: Optional[str] = None
 
 class DatasetResponse(BaseModel):
     id: int

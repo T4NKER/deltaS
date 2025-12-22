@@ -1,6 +1,9 @@
 import hashlib
+import hmac
+import os
 import pandas as pd
 import pyarrow as pa
+import numpy as np
 from datetime import datetime, timedelta
 from deltalake import write_deltalake, DeltaTable
 from sqlalchemy.orm import Session
@@ -9,10 +12,86 @@ from src.utils.s3_utils import (
     get_delta_storage_options, get_full_s3_path, get_bucket_name
 )
 
+def get_watermark_secret() -> bytes:
+    secret = os.getenv("WATERMARK_SECRET", "default-watermark-secret-change-in-production")
+    return secret.encode('utf-8')
+
+def detect_anchor_columns_from_schema(schema: pa.Schema, sensitive_columns: list = None) -> list:
+    all_cols = [field.name for field in schema]
+    sensitive_columns = sensitive_columns or []
+    
+    timestamp_like = [col for col in all_cols if 'timestamp' in col.lower() or 'time' in col.lower() or 'date' in col.lower()]
+    pii_like = [col for col in all_cols if any(term in col.lower() for term in ['email', 'phone', 'ssn', 'name', 'address', 'ip'])]
+    volatile_like = [col for col in all_cols if any(term in col.lower() for term in ['score', 'rating', 'price', 'amount', 'balance'])]
+    
+    excluded_lower = set([col.lower() for col in timestamp_like + pii_like + volatile_like + ['_watermark_id']] + [col.lower() if isinstance(col, str) else col for col in sensitive_columns])
+    
+    id_like = [col for col in all_cols if col.lower() not in excluded_lower and any(term in col.lower() for term in ['id', 'key', 'pk', 'uuid', 'guid'])]
+    categorical_like = [col for col in all_cols if col.lower() not in excluded_lower and any(term in col.lower() for term in ['type', 'status', 'category', 'code', 'country', 'region', 'state'])]
+    
+    anchor_cols = id_like[:3] + categorical_like[:2]
+    
+    if not anchor_cols:
+        remaining = [col for col in all_cols if col.lower() not in excluded_lower]
+        anchor_cols = remaining[:min(5, len(remaining))]
+    
+    if not anchor_cols:
+        remaining_all = [col for col in all_cols if col != '_watermark_id']
+        anchor_cols = remaining_all[:min(5, len(remaining_all))]
+    
+    if not anchor_cols:
+        raise ValueError("No suitable anchor columns found in schema. Please specify anchor_columns explicitly.")
+    
+    return anchor_cols[:10]
+
 def generate_watermark(buyer_id: int, share_id: int) -> str:
-    watermark_string = f"{buyer_id}-{share_id}"
-    watermark_hash = hashlib.sha256(watermark_string.encode()).hexdigest()[:16]
-    return watermark_hash
+    secret = get_watermark_secret()
+    message = f"{buyer_id}:{share_id}".encode('utf-8')
+    hmac_hash = hmac.new(secret, message, hashlib.sha256).hexdigest()[:16]
+    return hmac_hash
+
+def normalize_value_for_anchor(value, dtype):
+    if pd.isna(value):
+        return 'NULL'
+    
+    if pd.api.types.is_integer_dtype(dtype):
+        return str(int(value))
+    elif pd.api.types.is_float_dtype(dtype):
+        return f"{float(value):.10f}"
+    elif pd.api.types.is_datetime64_any_dtype(dtype):
+        ts = pd.to_datetime(value)
+        return ts.strftime('%Y-%m-%dT%H:%M:%S.%f')
+    elif pd.api.types.is_bool_dtype(dtype):
+        return 'TRUE' if value else 'FALSE'
+    else:
+        return str(value)
+
+def compute_row_anchor(row: pd.Series, df_dtypes: pd.Series = None, anchor_columns: list = None) -> int:
+    row_filtered = row.drop('_watermark_id') if '_watermark_id' in row.index else row
+    
+    if anchor_columns:
+        available_anchor_cols = [col for col in anchor_columns if col in row_filtered.index]
+        if len(available_anchor_cols) != len(anchor_columns):
+            missing = [col for col in anchor_columns if col not in row_filtered.index]
+            raise ValueError(f"Anchor columns missing from row: {missing}")
+        cols_to_use = sorted(available_anchor_cols)
+    else:
+        cols_to_use = sorted(row_filtered.index)
+    
+    normalized_parts = []
+    for col in cols_to_use:
+        value = row_filtered[col]
+        if df_dtypes is not None and col in df_dtypes.index:
+            dtype = df_dtypes[col]
+        else:
+            dtype = type(value)
+        normalized = normalize_value_for_anchor(value, dtype)
+        normalized_parts.append(f"{col}:{normalized}")
+    
+    row_str = '|'.join(normalized_parts)
+    row_hash_hex = hashlib.sha256(row_str.encode('utf-8')).hexdigest()[:16]
+    row_hash = int(row_hash_hex, 16)
+    return row_hash
 
 def generate_pseudorows(df: pd.DataFrame, watermark: str, num_pseudorows: int = None) -> pd.DataFrame:
     if df.empty:
@@ -129,7 +208,7 @@ def generate_pseudorows(df: pd.DataFrame, watermark: str, num_pseudorows: int = 
         print(f"Warning: Failed to create pseudorows DataFrame: {e}")
         return pd.DataFrame()
 
-def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str) -> pd.DataFrame:
+def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str, is_trial: bool = False, anchor_columns: list = None) -> pd.DataFrame:
     if df.empty:
         return df
     
@@ -138,8 +217,13 @@ def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str) -> pd.DataFra
     watermark_seed = int(watermark[:8], 16)
     watermark_bytes = [int(watermark[i:i+2], 16) for i in range(0, min(16, len(watermark)), 2)]
     
+    df_for_anchor = df.drop(columns=['_watermark_id']) if '_watermark_id' in df.columns else df
+    row_anchors = df_for_anchor.apply(lambda r: compute_row_anchor(r, df_for_anchor.dtypes, anchor_columns), axis=1).values.astype(np.uint64)
+    
     timestamp_cols = []
     for col in df.columns:
+        if col == '_watermark_id':
+            continue
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             timestamp_cols.append(col)
         elif pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
@@ -155,59 +239,35 @@ def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str) -> pd.DataFra
             except:
                 pass
     
-    if not timestamp_cols:
+    if is_trial:
+        df['_watermark_id'] = (row_anchors % 1000000).astype(np.int64)
+    
+    if not timestamp_cols and not is_trial:
         return df
     
     for col in timestamp_cols:
         if not pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = pd.to_datetime(df[col])
     
-    for pos, (idx, row) in enumerate(df.iterrows()):
-        byte_idx = pos % len(watermark_bytes)
-        watermark_byte = watermark_bytes[byte_idx]
+    for col in timestamp_cols:
+        if col not in df.columns:
+            continue
         
-        for col in timestamp_cols:
-            try:
-                if pd.api.types.is_datetime64_any_dtype(df[col]):
-                    original_ts = row[col]
-                    if pd.isna(original_ts):
-                        continue
-                    
-                    if not isinstance(original_ts, pd.Timestamp) and not hasattr(original_ts, 'microsecond'):
-                        original_ts = pd.to_datetime(original_ts)
-                    
-                    if pos == 0:
-                        target_microseconds = watermark_seed % 1000000
-                    else:
-                        expected_byte = watermark_bytes[pos % len(watermark_bytes)]
-                        target_microseconds = (expected_byte * 1000 + watermark_seed % 1000) % 1000000
-                    
-                    base_ts = original_ts.replace(microsecond=0)
-                    watermarked_ts = base_ts + timedelta(microseconds=target_microseconds)
-                    df.loc[idx, col] = watermarked_ts
-                else:
-                    original_str = row[col]
-                    if pd.isna(original_str) or not isinstance(original_str, str):
-                        continue
-                    
-                    try:
-                        original_ts = pd.to_datetime(original_str)
-                        if pos == 0:
-                            target_microseconds = watermark_seed % 1000000
-                        else:
-                            expected_byte = watermark_bytes[pos % len(watermark_bytes)]
-                            target_microseconds = (expected_byte * 1000 + watermark_seed % 1000) % 1000000
-                        
-                        base_ts = original_ts.replace(microsecond=0)
-                        watermarked_ts = base_ts + timedelta(microseconds=target_microseconds)
-                        if '.' in original_str or 'T' in original_str:
-                            df.at[idx, col] = watermarked_ts.strftime('%Y-%m-%dT%H:%M:%S.%f')
-                        else:
-                            df.at[idx, col] = watermarked_ts.strftime('%Y-%m-%dT%H:%M:%S.%f')
-                    except:
-                        pass
-            except Exception as e:
-                pass
+        mask = df[col].notna()
+        if not mask.any():
+            continue
+        
+        original_ts = df.loc[mask, col]
+        row_anchors_masked = row_anchors[mask.values]
+        
+        anchor_bytes = (row_anchors_masked % len(watermark_bytes)).astype(np.int64)
+        watermark_byte_values = np.array([watermark_bytes[int(b)] for b in anchor_bytes])
+        
+        target_microseconds = (watermark_byte_values * 1000 + watermark_seed % 1000) % 1000000
+        
+        base_ts = original_ts.dt.floor('S')
+        watermarked_ts = base_ts + pd.to_timedelta(target_microseconds, unit='us')
+        df.loc[mask, col] = watermarked_ts
     
     return df
 
@@ -234,7 +294,12 @@ def create_watermarked_table(
             raise Exception("Original table is empty")
         
         try:
-            df = apply_watermark_to_dataframe(df, watermark)
+            share = db.query(Share).filter(Share.id == share_id).first()
+            is_trial = share.is_trial if share else False
+            anchor_cols = None
+            if dataset.anchor_columns:
+                anchor_cols = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+            df = apply_watermark_to_dataframe(df, watermark, is_trial=is_trial, anchor_columns=anchor_cols)
         except Exception as watermark_error:
             print(f"Warning: Watermarking failed: {watermark_error}")
             df = df.copy()
@@ -290,7 +355,10 @@ def update_watermarked_tables(
                     continue
             
             watermark = generate_watermark(share.buyer_id, share.id)
-            watermarked_data = apply_watermark_to_dataframe(new_data, watermark)
+            anchor_cols = None
+            if dataset.anchor_columns:
+                anchor_cols = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+            watermarked_data = apply_watermark_to_dataframe(new_data, watermark, is_trial=share.is_trial, anchor_columns=anchor_cols)
             
             full_watermarked_path = get_full_s3_path(
                 bucket_name,

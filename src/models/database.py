@@ -31,6 +31,7 @@ class Dataset(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
+    table_name = Column(String)
     table_path = Column(String, nullable=False)
     price = Column(Float, default=0.0)
     is_public = Column(Boolean, default=False)
@@ -41,6 +42,7 @@ class Dataset(Base):
     detected_pii_types = Column(Text)
     sensitive_columns = Column(Text)
     requires_approval = Column(Boolean, default=False)
+    anchor_columns = Column(Text)
     
     seller = relationship("User", back_populates="datasets")
     shares = relationship("Share", back_populates="dataset")
@@ -93,6 +95,11 @@ class AuditLog(Base):
     columns_requested = Column(Text)
     row_count_returned = Column(Integer, default=0)
     query_limit = Column(Integer)
+    predicates_requested = Column(Text)
+    predicates_applied = Column(Text)
+    predicates_applied_count = Column(Integer)
+    anchor_columns_used = Column(Text)
+    columns_returned = Column(Text)
     ip_address = Column(String)
     
     buyer = relationship("User")

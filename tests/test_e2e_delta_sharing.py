@@ -49,6 +49,20 @@ def test_e2e_delta_sharing():
         print(f"  Please start seller service: sudo docker-compose up -d seller")
         raise
     
+    print("\n[0] Ensuring S3 bucket exists...")
+    from src.utils.s3_utils import get_s3_client, get_bucket_name
+    s3_client = get_s3_client()
+    bucket_name = get_bucket_name()
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"✓ Bucket {bucket_name} already exists")
+    except:
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+            print(f"✓ Created bucket: {bucket_name}")
+        except Exception as e:
+            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+    
     print("\n[1] Registering users...")
     seller_email = f"seller_{int(time.time())}@test.com"
     buyer_email = f"buyer_{int(time.time())}@test.com"
@@ -93,7 +107,8 @@ def test_e2e_delta_sharing():
         "description": "E2E test dataset",
         "table_path": "test_table",
         "price": 0.0,
-        "is_public": True
+        "is_public": True,
+        "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_id = dataset_data["id"]
     print(f"✓ Dataset created: {dataset_id}")
@@ -104,7 +119,8 @@ def test_e2e_delta_sharing():
         "description": "E2E test dataset requiring approval",
         "table_path": "test_table_approval",
         "price": 0.0,
-        "is_public": True
+        "is_public": True,
+        "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_approval_id = dataset_approval_data["id"]
     
@@ -225,22 +241,27 @@ def test_e2e_delta_sharing():
         
         print(f"  Watermark: {result['watermark']}")
         print(f"  Timestamp columns: {result['timestamp_cols']}")
-        print(f"  Checked {result['total_checked']} timestamps")
+        
+        if result.get('watermark_column', {}).get('checked', 0) > 0:
+            wc = result['watermark_column']
+            print(f"  Watermark column: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
+            if wc['found']:
+                print(f"    ✓ Watermark column detected")
+                for sample in wc.get('samples', [])[:3]:
+                    print(f"      {sample}")
+        
+        if result.get('timestamp', {}).get('checked', 0) > 0:
+            ts = result['timestamp']
+            print(f"  Timestamp columns: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
+            if ts['found']:
+                print(f"    ✓ Timestamp watermark detected")
+                for sample in ts.get('samples', [])[:3]:
+                    print(f"      {sample}")
         
         if result["found"]:
-            for sample in result["sample_matches"]:
-                print(f"    {sample} ✓")
-            print(f"  ✓ Watermark detected: {result['matches']}/{result['total_checked']} timestamps match pattern ({result['match_rate']:.1f}%)")
-            if result['match_rate'] >= 50:
-                print(f"  ✓ SUCCESS: Watermarking is working correctly!")
-            else:
-                print(f"  ⚠ WARNING: Low match rate, watermarking may not be working correctly")
+            print(f"  ✓ SUCCESS: Watermarking is working correctly!")
         else:
-            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected in timestamps')}")
-            if 'sample_mismatches' in result:
-                print(f"  Sample mismatches:")
-                for mismatch in result['sample_mismatches']:
-                    print(f"    {mismatch}")
+            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected')}")
         
         print("\n[10] Waiting 35 seconds for more data to be written...")
         time.sleep(35)
@@ -267,9 +288,14 @@ def test_e2e_delta_sharing():
         result = check_watermark(df3, buyer_id, share_id, verbose=False)
         
         if result["found"]:
-            print(f"  ✓ Watermark still present: {result['matches']}/{result['total_checked']} timestamps match ({result['match_rate']:.1f}%)")
+            wc = result.get('watermark_column', {})
+            ts = result.get('timestamp', {})
+            if wc.get('found'):
+                print(f"  ✓ Watermark column still present: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
+            if ts.get('found'):
+                print(f"  ✓ Timestamp watermark still present: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
         else:
-            print(f"  ⚠ WARNING: Watermark not detected in final query")
+            print(f"  ⚠ WARNING: Watermark not detected in final query: {result.get('reason', 'Unknown reason')}")
         
         print("\n[12] Testing usage logging...")
         logs = api_get(f"{MARKETPLACE_URL}/usage-logs?dataset_id={dataset_id}", headers=seller_headers)
@@ -347,6 +373,20 @@ def test_trial_share():
         print(f"Delta Sharing server is not running or not accessible: {e}")
         raise
     
+    print("\n[0] Ensuring S3 bucket exists...")
+    from src.utils.s3_utils import get_s3_client, get_bucket_name
+    s3_client = get_s3_client()
+    bucket_name = get_bucket_name()
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"✓ Bucket {bucket_name} already exists")
+    except:
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+            print(f"✓ Created bucket: {bucket_name}")
+        except Exception as e:
+            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+    
     print("\n[1] Registering users...")
     seller_email = f"seller_trial_{int(time.time())}@test.com"
     buyer_email = f"buyer_trial_{int(time.time())}@test.com"
@@ -391,7 +431,8 @@ def test_trial_share():
         "description": "E2E trial test dataset",
         "table_path": "trial_test_table",
         "price": 10.0,
-        "is_public": True
+        "is_public": True,
+        "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_id = dataset_data["id"]
     print(f"✓ Dataset created: {dataset_id}")
@@ -491,22 +532,27 @@ def test_trial_share():
         
         print(f"  Watermark: {result['watermark']}")
         print(f"  Timestamp columns: {result['timestamp_cols']}")
-        print(f"  Checked {result['total_checked']} timestamps")
+        
+        if result.get('watermark_column', {}).get('checked', 0) > 0:
+            wc = result['watermark_column']
+            print(f"  Watermark column: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
+            if wc['found']:
+                print(f"    ✓ Watermark column detected")
+                for sample in wc.get('samples', [])[:3]:
+                    print(f"      {sample}")
+        
+        if result.get('timestamp', {}).get('checked', 0) > 0:
+            ts = result['timestamp']
+            print(f"  Timestamp columns: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
+            if ts['found']:
+                print(f"    ✓ Timestamp watermark detected")
+                for sample in ts.get('samples', [])[:3]:
+                    print(f"      {sample}")
         
         if result["found"]:
-            for sample in result["sample_matches"]:
-                print(f"    {sample} ✓")
-            print(f"  ✓ Watermark detected: {result['matches']}/{result['total_checked']} timestamps match pattern ({result['match_rate']:.1f}%)")
-            if result['match_rate'] >= 50:
-                print(f"  ✓ SUCCESS: Trial share watermarking is working correctly!")
-            else:
-                print(f"  ⚠ WARNING: Low match rate, watermarking may not be working correctly")
+            print(f"  ✓ SUCCESS: Trial share watermarking is working correctly!")
         else:
-            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected in timestamps')}")
-            if 'sample_mismatches' in result:
-                print(f"  Sample mismatches:")
-                for mismatch in result['sample_mismatches'][:3]:
-                    print(f"    {mismatch}")
+            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected')}")
         
         print("\n[11] Testing that trial cannot exceed row limit on subsequent queries...")
         df2 = load_as_pandas(table_url)
@@ -521,7 +567,12 @@ def test_trial_share():
         print(f"  Rows returned (query 1): {trial_row_count}")
         print(f"  Rows returned (query 2): {trial_row_count_2}")
         print(f"  Watermark detected: {result['found']}")
-        print(f"  Watermark match rate: {result['match_rate']:.1f}%")
+        wc = result.get('watermark_column', {})
+        ts = result.get('timestamp', {})
+        if wc.get('checked', 0) > 0:
+            print(f"  Watermark column match rate: {wc.get('match_rate', 0):.1f}%")
+        if ts.get('checked', 0) > 0:
+            print(f"  Timestamp match rate: {ts.get('match_rate', 0):.1f}%")
         print("="*80)
         
         os.unlink(trial_profile_path)
@@ -537,10 +588,456 @@ def test_trial_share():
             os.unlink(trial_profile_path)
         raise
 
+def test_phase2_filtering():
+    print("\n" + "="*80)
+    print("Phase 2 Filtering E2E Test")
+    print("="*80)
+    
+    os.environ.setdefault('S3_ENDPOINT_URL', 'http://localhost:4566')
+    os.environ.setdefault('S3_ACCESS_KEY', 'test')
+    os.environ.setdefault('S3_SECRET_KEY', 'test')
+    os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
+    os.environ.setdefault('S3_REGION', 'us-east-1')
+    
+    try:
+        response = requests.get("http://localhost:4566/_localstack/health", timeout=2)
+        if response.status_code != 200:
+            raise Exception("LocalStack health check failed")
+        print("LocalStack is running")
+    except Exception as e:
+        print(f"LocalStack is not running or not accessible: {e}")
+        raise
+    
+    try:
+        response = requests.get(f"{DELTA_SHARING_SERVER_URL}/health", timeout=2)
+        if response.status_code != 200:
+            raise Exception("Delta Sharing server health check failed")
+        print("Delta Sharing server is running")
+    except Exception as e:
+        print(f"Delta Sharing server is not running or not accessible: {e}")
+        raise
+    
+    print("\n[0] Ensuring S3 bucket exists...")
+    from src.utils.s3_utils import get_s3_client, get_bucket_name
+    s3_client = get_s3_client()
+    bucket_name = get_bucket_name()
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"✓ Bucket {bucket_name} already exists")
+    except:
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+            print(f"✓ Created bucket: {bucket_name}")
+        except Exception as e:
+            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+    
+    print("\n[1] Registering users...")
+    seller_email = f"seller_filter_{int(time.time())}@test.com"
+    buyer_email = f"buyer_filter_{int(time.time())}@test.com"
+    password = "testpass123"
+    
+    seller_data = api_post(f"{MARKETPLACE_URL}/register", {
+        "email": seller_email,
+        "password": password,
+        "role": "seller"
+    }, expected_status=201)
+    seller_id = seller_data["id"]
+    print(f"✓ Seller registered: {seller_email} (ID: {seller_id})")
+    
+    buyer_data = api_post(f"{MARKETPLACE_URL}/register", {
+        "email": buyer_email,
+        "password": password,
+        "role": "buyer"
+    }, expected_status=201)
+    buyer_id = buyer_data["id"]
+    print(f"✓ Buyer registered: {buyer_email} (ID: {buyer_id})")
+    
+    print("\n[2] Logging in...")
+    seller_login = api_post(f"{MARKETPLACE_URL}/login", {
+        "email": seller_email,
+        "password": password
+    })
+    seller_token = seller_login["access_token"]
+    seller_headers = {"Authorization": f"Bearer {seller_token}"}
+    
+    buyer_login = api_post(f"{MARKETPLACE_URL}/login", {
+        "email": buyer_email,
+        "password": password
+    })
+    buyer_token = buyer_login["access_token"]
+    buyer_headers = {"Authorization": f"Bearer {buyer_token}"}
+    print("✓ Users logged in")
+    
+    print("\n[3] Creating dataset with diverse test data...")
+    dataset_data = api_post(f"{MARKETPLACE_URL}/datasets", {
+        "name": "Filter Test Dataset",
+        "description": "Dataset for Phase 2 filter testing",
+        "table_path": "filter_test_table",
+        "price": 0.0,
+        "is_public": True,
+        "anchor_columns": "category,write_batch"
+    }, headers=seller_headers, expected_status=201)
+    dataset_id = dataset_data["id"]
+    print(f"✓ Dataset created: {dataset_id}")
+    
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if dataset:
+            dataset.table_name = "filter_test_table"
+            db.commit()
+            print(f"✓ Table name set: filter_test_table")
+    finally:
+        db.close()
+    
+    print("\n[4] Setting seller's Delta Sharing server URL...")
+    db = SessionLocal()
+    try:
+        from src.models.database import User
+        seller_user = db.query(User).filter(User.id == seller_id).first()
+        if seller_user:
+            seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
+            db.commit()
+    finally:
+        db.close()
+    
+    print("\n[5] Writing test data with diverse values...")
+    from src.seller.data_writer import write_data_continuously
+    
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if dataset:
+            import pandas as pd
+            import pyarrow as pa
+            from datetime import datetime
+            from deltalake import write_deltalake
+            from src.utils.s3_utils import get_s3_client, get_delta_storage_options, get_bucket_name, get_full_s3_path
+            
+            bucket_name = get_bucket_name()
+            table_path = get_full_s3_path(bucket_name, dataset.table_path)
+            storage_options = get_delta_storage_options()
+            s3_client = get_s3_client()
+            
+            try:
+                s3_client.head_bucket(Bucket=bucket_name)
+            except:
+                s3_client.create_bucket(Bucket=bucket_name)
+            
+            test_data = pd.DataFrame({
+                'country': ['EE', 'EE', 'LV', 'LV', 'LT', 'EE', 'LV', 'LT', 'EE', 'LV'] * 3,
+                'amount': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] * 3,
+                'category': ['A', 'B', 'A', 'B', 'A', 'B', 'A', 'B', 'A', 'B'] * 3,
+                'timestamp': [datetime.utcnow().isoformat()] * 30,
+                'value': list(range(30))
+            })
+            
+            table = pa.Table.from_pandas(test_data)
+            write_deltalake(table_path, table, mode='overwrite', storage_options=storage_options)
+            print(f"✓ Wrote {len(test_data)} rows of test data")
+            print(f"  Countries: {test_data['country'].unique().tolist()}")
+            print(f"  Amount range: {test_data['amount'].min()} - {test_data['amount'].max()}")
+    finally:
+        db.close()
+    
+    print("\n[6] Buyer purchasing dataset...")
+    purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
+    share_token = purchase_data["share_token"]
+    share_id = purchase_data["share_id"]
+    seller_server_url = purchase_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
+    print(f"✓ Purchase successful, share token: {share_token[:20]}...")
+    
+    if purchase_data.get("approval_status") == "pending":
+        approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
+        print(f"✓ Share approved")
+    
+    print("\n[7] Testing filtered queries via direct HTTP calls...")
+    share_name = f"share_{share_id}"
+    schema_name = "default"
+    table_name = "filter_test_table"
+    query_url = f"{seller_server_url}/shares/{share_name}/schemas/{schema_name}/tables/{table_name}/query"
+    headers = {"Authorization": f"Bearer {share_token}"}
+    
+    def query_and_verify(query_body, expected_assertions):
+        print(f"\n  Testing: {query_body.get('predicateHints', query_body.get('jsonPredicateHints', 'no filters'))}")
+        response = requests.post(query_url, json=query_body, headers=headers)
+        
+        if response.status_code != 200:
+            print(f"    Response status: {response.status_code}")
+            print(f"    Response: {response.text[:200]}")
+            return response.status_code, None
+        
+        lines = response.text.strip().split('\n')
+        file_actions = []
+        for line in lines:
+            if line.strip():
+                try:
+                    obj = json.loads(line)
+                    if 'file' in obj:
+                        file_actions.append(obj['file'])
+                except:
+                    pass
+        
+        if not file_actions:
+            print(f"    No file actions in response")
+            return 200, pd.DataFrame()
+        
+        dfs = []
+        for file_action in file_actions:
+            file_url = file_action['url']
+            try:
+                file_response = requests.get(file_url, timeout=10)
+                if file_response.status_code == 200:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+                        tmp.write(file_response.content)
+                        tmp_path = tmp.name
+                    df = pd.read_parquet(tmp_path)
+                    os.unlink(tmp_path)
+                    dfs.append(df)
+            except Exception as e:
+                print(f"    Error downloading file: {e}")
+        
+        if not dfs:
+            return 200, pd.DataFrame()
+        
+        result_df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+        
+        for assertion_name, assertion_func in expected_assertions.items():
+            try:
+                assertion_func(result_df)
+                print(f"    ✓ {assertion_name}")
+            except AssertionError as e:
+                print(f"    ✗ {assertion_name}: {e}")
+                raise
+        
+        return 200, result_df
+    
+    def assert_all_country_ee(df):
+        if len(df) > 0:
+            assert all(df['country'] == 'EE'), f"Not all rows have country == 'EE', got: {df['country'].unique().tolist()}"
+    
+    def assert_all_amount_gt_50(df):
+        if len(df) > 0:
+            assert all(df['amount'] > 50), f"Not all rows have amount > 50, got min: {df['amount'].min()}"
+    
+    def assert_row_count_le(df, max_count):
+        assert len(df) <= max_count, f"Returned {len(df)} rows, expected <= {max_count}"
+    
+    def assert_row_count_gt(df, min_count=0):
+        assert len(df) > min_count, f"Returned {len(df)} rows, expected > {min_count}"
+    
+    def assert_all_country_in(df, values):
+        if len(df) > 0:
+            assert all(df['country'].isin(values)), f"Not all rows have country in {values}, got: {df['country'].unique().tolist()}"
+    
+    def assert_columns_include(df, required_cols):
+        assert set(df.columns) >= set(required_cols), f"Missing columns, got: {list(df.columns)}, required: {required_cols}"
+    
+    def assert_both_predicates(df):
+        if len(df) > 0:
+            assert all((df['country'] == 'EE') & (df['amount'] >= 50)), "Not all rows satisfy both predicates"
+    
+    print("\n[7a] Test: Equality filter")
+    status, df = query_and_verify(
+        {"predicateHints": ["country = 'EE'"]},
+        {
+            "All rows have country == 'EE'": assert_all_country_ee,
+            "Returned row count > 0": assert_row_count_gt
+        }
+    )
+    assert status == 200, "Query should succeed"
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[7b] Test: Numeric comparison filter")
+    status, df = query_and_verify(
+        {"predicateHints": ["amount > 50"]},
+        {
+            "All rows have amount > 50": assert_all_amount_gt_50
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[7c] Test: Filter and limit ordering")
+    status, df = query_and_verify(
+        {"predicateHints": ["country = 'EE'"], "limit": 5},
+        {
+            "Returned row count <= 5": lambda df: assert_row_count_le(df, 5),
+            "All rows satisfy predicate": assert_all_country_ee
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[7d] Test: Compound AND filter (multiple predicateHints)")
+    status, df = query_and_verify(
+        {"predicateHints": ["country = 'EE'", "amount >= 50"]},
+        {
+            "All rows satisfy both predicates": assert_both_predicates
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[7e] Test: Projection with filter")
+    status, df = query_and_verify(
+        {"columns": ["country", "amount"], "predicateHints": ["country IN ('EE','LV')"]},
+        {
+            "Returned columns match projection": lambda df: assert_columns_include(df, ['country', 'amount']),
+            "All rows satisfy predicate": lambda df: assert_all_country_in(df, ['EE', 'LV'])
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows with columns: {list(df.columns)}")
+    
+    print("\n[7f] Test: Invalid column predicate rejection")
+    response = requests.post(query_url, json={"predicateHints": ["nonexistent_column = 1"]}, headers=headers)
+    assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text[:200]}"
+    print(f"    ✓ Query correctly rejected with status {response.status_code}")
+    
+    print("\n[7g] Test: Unsupported operator rejection")
+    response = requests.post(query_url, json={"predicateHints": ["country LIKE 'E%'"]}, headers=headers)
+    assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text[:200]}"
+    print(f"    ✓ Query correctly rejected with status {response.status_code}")
+    
+    print("\n[7h] Test: JSON predicateHints format")
+    status, df = query_and_verify(
+        {"jsonPredicateHints": [{"column": "country", "op": "=", "value": "EE"}]},
+        {
+            "All rows have country == 'EE'": assert_all_country_ee
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[7i] Test: IN operator")
+    status, df = query_and_verify(
+        {"predicateHints": ["country IN ('EE','LV')"]},
+        {
+            "All rows have country in ['EE','LV']": lambda df: assert_all_country_in(df, ['EE', 'LV'])
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[8] Testing trial share with filters...")
+    trial_data = api_post(f"{MARKETPLACE_URL}/datasets/{dataset_id}/trial", {
+        "row_limit": 10,
+        "days_valid": 7
+    }, headers=buyer_headers)
+    trial_share_token = trial_data["share_token"]
+    trial_share_id = trial_data["share_id"]
+    trial_row_limit = trial_data["trial_row_limit"]
+    
+    trial_query_url = f"{seller_server_url}/shares/share_{trial_share_id}/schemas/{schema_name}/tables/{table_name}/query"
+    trial_headers = {"Authorization": f"Bearer {trial_share_token}"}
+    
+    def trial_query_and_verify(query_body, expected_assertions):
+        response = requests.post(trial_query_url, json=query_body, headers=trial_headers)
+        if response.status_code != 200:
+            return response.status_code, None
+        lines = response.text.strip().split('\n')
+        file_actions = []
+        for line in lines:
+            if line.strip():
+                try:
+                    obj = json.loads(line)
+                    if 'file' in obj:
+                        file_actions.append(obj['file'])
+                except:
+                    pass
+        if not file_actions:
+            return 200, pd.DataFrame()
+        dfs = []
+        for file_action in file_actions:
+            file_url = file_action['url']
+            try:
+                file_response = requests.get(file_url, timeout=10)
+                if file_response.status_code == 200:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as tmp:
+                        tmp.write(file_response.content)
+                        tmp_path = tmp.name
+                    df = pd.read_parquet(tmp_path)
+                    os.unlink(tmp_path)
+                    dfs.append(df)
+            except Exception as e:
+                print(f"    Error downloading file: {e}")
+        if not dfs:
+            return 200, pd.DataFrame()
+        result_df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+        for assertion_name, assertion_func in expected_assertions.items():
+            try:
+                assertion_func(result_df)
+                print(f"    ✓ {assertion_name}")
+            except AssertionError as e:
+                print(f"    ✗ {assertion_name}: {e}")
+                raise
+        return 200, result_df
+    
+    print("\n[8a] Test: Trial share filter cannot bypass row limit")
+    status, df = trial_query_and_verify(
+        {"predicateHints": ["country = 'EE'"], "limit": 1000},
+        {
+            "Returned row count <= trial limit": lambda df: assert_row_count_le(df, trial_row_limit)
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows (trial limit: {trial_row_limit})")
+    
+    print("\n[8b] Test: Trial share filter with smaller requested limit")
+    status, df = trial_query_and_verify(
+        {"predicateHints": ["country = 'EE'"], "limit": 3},
+        {
+            "Returned row count <= 3": lambda df: assert_row_count_le(df, 3)
+        }
+    )
+    assert status == 200
+    print(f"    Returned {len(df)} rows")
+    
+    print("\n[9] Testing revoked share blocks filtered queries...")
+    shares_list = api_get(f"{MARKETPLACE_URL}/my-shares", headers=seller_headers)
+    test_share = next((s for s in shares_list if s["id"] == share_id), None)
+    if test_share:
+        api_delete(f"{MARKETPLACE_URL}/shares/{share_id}", headers=seller_headers)
+        print("✓ Share revoked")
+    
+    response = requests.post(query_url, json={"predicateHints": ["country = 'EE'"]}, headers=headers)
+    assert response.status_code in [401, 403], f"Expected 401/403, got {response.status_code}"
+    print(f"    ✓ Revoked share correctly blocked (status {response.status_code})")
+    
+    print("\n[10] Testing table name validation...")
+    invalid_table_url = f"{seller_server_url}/shares/{share_name}/schemas/{schema_name}/tables/wrong_table_name/query"
+    response = requests.post(invalid_table_url, json={}, headers=headers)
+    assert response.status_code in [400, 401, 403, 404], f"Expected 400/401/403/404, got {response.status_code}"
+    print(f"    ✓ Invalid table name correctly rejected (status {response.status_code})")
+    
+    print("\n" + "="*80)
+    print("Phase 2 Filtering Test Summary:")
+    print("  ✓ Equality filter")
+    print("  ✓ Numeric comparison filter")
+    print("  ✓ Filter + limit ordering")
+    print("  ✓ Compound AND filter")
+    print("  ✓ Projection with filter")
+    print("  ✓ Invalid column rejection")
+    print("  ✓ Unsupported operator rejection")
+    print("  ✓ JSON predicateHints format")
+    print("  ✓ IN operator")
+    print("  ✓ Trial share filter limits")
+    print("  ✓ Revoked share blocking")
+    print("  ✓ Table name validation")
+    print("="*80)
+    
+    print("\n✓ Phase 2 filtering E2E test completed successfully!")
+    return True
+
 if __name__ == "__main__":
     test_e2e_delta_sharing()
     print("\n" + "="*80)
     print("Starting Trial Share Test...")
     print("="*80)
     test_trial_share()
+    print("\n" + "="*80)
+    print("Starting Phase 2 Filtering Test...")
+    print("="*80)
+    test_phase2_filtering()
 

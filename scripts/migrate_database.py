@@ -105,12 +105,42 @@ def migrate_database():
                     columns_requested TEXT,
                     row_count_returned INTEGER DEFAULT 0,
                     query_limit INTEGER,
+                    predicates_requested TEXT,
+                    predicates_applied TEXT,
+                    predicates_applied_count INTEGER,
                     ip_address VARCHAR
                 );
             """))
             print("Created audit_logs table")
         except Exception as e:
             print(f"audit_logs table: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS predicates_requested TEXT;
+            """))
+            print("Added predicates_requested column to audit_logs")
+        except Exception as e:
+            print(f"predicates_requested column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS predicates_applied TEXT;
+            """))
+            print("Added predicates_applied column to audit_logs")
+        except Exception as e:
+            print(f"predicates_applied column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS predicates_applied_count INTEGER;
+            """))
+            print("Added predicates_applied_count column to audit_logs")
+        except Exception as e:
+            print(f"predicates_applied_count column: {e}")
         
         try:
             conn.execute(text("""
@@ -171,6 +201,48 @@ def migrate_database():
             print("Added trial_expires_at column to shares")
         except Exception as e:
             print(f"trial_expires_at column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE datasets 
+                ADD COLUMN IF NOT EXISTS table_name VARCHAR;
+            """))
+            print("Added table_name column to datasets")
+            conn.execute(text("""
+                UPDATE datasets 
+                SET table_name = name 
+                WHERE table_name IS NULL;
+            """))
+            print("Populated table_name with name values for existing datasets")
+        except Exception as e:
+            print(f"table_name column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE datasets 
+                ADD COLUMN IF NOT EXISTS anchor_columns TEXT;
+            """))
+            print("Added anchor_columns column to datasets")
+        except Exception as e:
+            print(f"anchor_columns column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS anchor_columns_used TEXT;
+            """))
+            print("Added anchor_columns_used column to audit_logs")
+        except Exception as e:
+            print(f"anchor_columns_used column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS columns_returned TEXT;
+            """))
+            print("Added columns_returned column to audit_logs")
+        except Exception as e:
+            print(f"columns_returned column: {e}")
         
         conn.commit()
         print("\nDatabase migration completed!")
