@@ -5,14 +5,20 @@ import json
 import os
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 from threading import Thread
+from datetime import datetime, timezone
 from delta_sharing import SharingClient, load_as_pandas
 from delta_sharing.protocol import DeltaSharingProfile
+import pyarrow as pa
+from deltalake import write_deltalake
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.database import SessionLocal, Dataset
+from src.models.database import SessionLocal, Dataset, User
+from src.seller.data_writer import write_data_continuously
+from src.utils.s3_utils import get_s3_client, get_bucket_name, get_delta_storage_options, get_full_s3_path
 from tests.utils import check_watermark, extract_list_items, api_post, api_get, api_delete
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
@@ -50,7 +56,6 @@ def test_e2e_delta_sharing():
         raise
     
     print("\n[0] Ensuring S3 bucket exists...")
-    from src.utils.s3_utils import get_s3_client, get_bucket_name
     s3_client = get_s3_client()
     bucket_name = get_bucket_name()
     try:
@@ -137,7 +142,6 @@ def test_e2e_delta_sharing():
     print("\n[5] Setting seller's Delta Sharing server URL...")
     db = SessionLocal()
     try:
-        from src.models.database import User
         seller_user = db.query(User).filter(User.id == seller_id).first()
         if seller_user:
             seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
@@ -195,8 +199,6 @@ def test_e2e_delta_sharing():
         print("✓ Delta Sharing client created")
         
         print("\n[7] Starting seller data writer (background thread)...")
-        from src.seller.data_writer import write_data_continuously
-        
         db = SessionLocal()
         writer_thread = Thread(
             target=write_data_continuously,
@@ -237,7 +239,15 @@ def test_e2e_delta_sharing():
             print(f"  Sample data:\n{df.head()}")
         
         print("\n[9a] Testing watermarking...")
-        result = check_watermark(df, buyer_id, share_id, verbose=True)
+        db = SessionLocal()
+        try:
+            dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            anchor_columns = None
+            if dataset and dataset.anchor_columns:
+                anchor_columns = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+        finally:
+            db.close()
+        result = check_watermark(df, buyer_id, share_id, verbose=True, anchor_columns=anchor_columns)
         
         print(f"  Watermark: {result['watermark']}")
         print(f"  Timestamp columns: {result['timestamp_cols']}")
@@ -285,7 +295,15 @@ def test_e2e_delta_sharing():
         print(f"✓ Final read: {final_count} rows")
         
         print("\n[11a] Verifying watermark persists across queries...")
-        result = check_watermark(df3, buyer_id, share_id, verbose=False)
+        db = SessionLocal()
+        try:
+            dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            anchor_columns = None
+            if dataset and dataset.anchor_columns:
+                anchor_columns = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+        finally:
+            db.close()
+        result = check_watermark(df3, buyer_id, share_id, verbose=False, anchor_columns=anchor_columns)
         
         if result["found"]:
             wc = result.get('watermark_column', {})
@@ -338,7 +356,6 @@ def test_e2e_delta_sharing():
         
     except Exception as e:
         print(f"\nE2E test failed: {e}")
-        import traceback
         traceback.print_exc()
         if os.path.exists(profile_path):
             os.unlink(profile_path)
@@ -374,7 +391,6 @@ def test_trial_share():
         raise
     
     print("\n[0] Ensuring S3 bucket exists...")
-    from src.utils.s3_utils import get_s3_client, get_bucket_name
     s3_client = get_s3_client()
     bucket_name = get_bucket_name()
     try:
@@ -440,7 +456,6 @@ def test_trial_share():
     print("\n[4] Setting seller's Delta Sharing server URL...")
     db = SessionLocal()
     try:
-        from src.models.database import User
         seller_user = db.query(User).filter(User.id == seller_id).first()
         if seller_user:
             seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
@@ -450,8 +465,6 @@ def test_trial_share():
         db.close()
     
     print("\n[5] Starting seller data writer to create data...")
-    from src.seller.data_writer import write_data_continuously
-    
     db = SessionLocal()
     writer_thread = Thread(
         target=write_data_continuously,
@@ -528,7 +541,15 @@ def test_trial_share():
             print(f"  Sample data:\n{df.head()}")
         
         print("\n[10] Testing watermarking on trial share...")
-        result = check_watermark(df, buyer_id, trial_share_id, verbose=True)
+        db = SessionLocal()
+        try:
+            dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            anchor_columns = None
+            if dataset and dataset.anchor_columns:
+                anchor_columns = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+        finally:
+            db.close()
+        result = check_watermark(df, buyer_id, trial_share_id, verbose=True, anchor_columns=anchor_columns)
         
         print(f"  Watermark: {result['watermark']}")
         print(f"  Timestamp columns: {result['timestamp_cols']}")
@@ -546,8 +567,13 @@ def test_trial_share():
             print(f"  Timestamp columns: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
             if ts['found']:
                 print(f"    ✓ Timestamp watermark detected")
-                for sample in ts.get('samples', [])[:3]:
-                    print(f"      {sample}")
+                matches_only = [s for s in ts.get('samples', []) if '[MISMATCH]' not in s]
+                if matches_only:
+                    for sample in matches_only[:3]:
+                        print(f"      {sample}")
+                else:
+                    for sample in ts.get('samples', [])[:3]:
+                        print(f"      {sample}")
         
         if result["found"]:
             print(f"  ✓ SUCCESS: Trial share watermarking is working correctly!")
@@ -582,7 +608,6 @@ def test_trial_share():
         
     except Exception as e:
         print(f"\nTrial share test failed: {e}")
-        import traceback
         traceback.print_exc()
         if os.path.exists(trial_profile_path):
             os.unlink(trial_profile_path)
@@ -618,7 +643,6 @@ def test_phase2_filtering():
         raise
     
     print("\n[0] Ensuring S3 bucket exists...")
-    from src.utils.s3_utils import get_s3_client, get_bucket_name
     s3_client = get_s3_client()
     bucket_name = get_bucket_name()
     try:
@@ -693,7 +717,6 @@ def test_phase2_filtering():
     print("\n[4] Setting seller's Delta Sharing server URL...")
     db = SessionLocal()
     try:
-        from src.models.database import User
         seller_user = db.query(User).filter(User.id == seller_id).first()
         if seller_user:
             seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
@@ -702,17 +725,10 @@ def test_phase2_filtering():
         db.close()
     
     print("\n[5] Writing test data with diverse values...")
-    from src.seller.data_writer import write_data_continuously
-    
     db = SessionLocal()
     try:
         dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
         if dataset:
-            import pandas as pd
-            import pyarrow as pa
-            from datetime import datetime
-            from deltalake import write_deltalake
-            from src.utils.s3_utils import get_s3_client, get_delta_storage_options, get_bucket_name, get_full_s3_path
             
             bucket_name = get_bucket_name()
             table_path = get_full_s3_path(bucket_name, dataset.table_path)
@@ -728,7 +744,7 @@ def test_phase2_filtering():
                 'country': ['EE', 'EE', 'LV', 'LV', 'LT', 'EE', 'LV', 'LT', 'EE', 'LV'] * 3,
                 'amount': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] * 3,
                 'category': ['A', 'B', 'A', 'B', 'A', 'B', 'A', 'B', 'A', 'B'] * 3,
-                'timestamp': [datetime.utcnow().isoformat()] * 30,
+                'timestamp': [datetime.now(timezone.utc).isoformat()] * 30,
                 'value': list(range(30))
             })
             
@@ -994,7 +1010,13 @@ def test_phase2_filtering():
     assert status == 200
     print(f"    Returned {len(df)} rows")
     
-    print("\n[9] Testing revoked share blocks filtered queries...")
+    print("\n[9] Testing table name validation...")
+    invalid_table_url = f"{seller_server_url}/shares/{share_name}/schemas/{schema_name}/tables/wrong_table_name/query"
+    response = requests.post(invalid_table_url, json={}, headers=headers)
+    assert response.status_code in [400, 404], f"Expected 400/404, got {response.status_code}"
+    print(f"    ✓ Invalid table name correctly rejected (status {response.status_code})")
+    
+    print("\n[10] Testing revoked share blocks filtered queries...")
     shares_list = api_get(f"{MARKETPLACE_URL}/my-shares", headers=seller_headers)
     test_share = next((s for s in shares_list if s["id"] == share_id), None)
     if test_share:
@@ -1004,12 +1026,6 @@ def test_phase2_filtering():
     response = requests.post(query_url, json={"predicateHints": ["country = 'EE'"]}, headers=headers)
     assert response.status_code in [401, 403], f"Expected 401/403, got {response.status_code}"
     print(f"    ✓ Revoked share correctly blocked (status {response.status_code})")
-    
-    print("\n[10] Testing table name validation...")
-    invalid_table_url = f"{seller_server_url}/shares/{share_name}/schemas/{schema_name}/tables/wrong_table_name/query"
-    response = requests.post(invalid_table_url, json={}, headers=headers)
-    assert response.status_code in [400, 401, 403, 404], f"Expected 400/401/403/404, got {response.status_code}"
-    print(f"    ✓ Invalid table name correctly rejected (status {response.status_code})")
     
     print("\n" + "="*80)
     print("Phase 2 Filtering Test Summary:")

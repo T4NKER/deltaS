@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import os
+import random
+import traceback
 import pandas as pd
 import pyarrow as pa
 import numpy as np
@@ -71,9 +73,8 @@ def compute_row_anchor(row: pd.Series, df_dtypes: pd.Series = None, anchor_colum
     
     if anchor_columns:
         available_anchor_cols = [col for col in anchor_columns if col in row_filtered.index]
-        if len(available_anchor_cols) != len(anchor_columns):
-            missing = [col for col in anchor_columns if col not in row_filtered.index]
-            raise ValueError(f"Anchor columns missing from row: {missing}")
+        if not available_anchor_cols:
+            raise ValueError(f"None of the anchor columns are available in row. Requested: {anchor_columns}, Available: {list(row_filtered.index)}")
         cols_to_use = sorted(available_anchor_cols)
     else:
         cols_to_use = sorted(row_filtered.index)
@@ -103,7 +104,6 @@ def generate_pseudorows(df: pd.DataFrame, watermark: str, num_pseudorows: int = 
     watermark_seed = int(watermark[:8], 16)
     watermark_bytes = [int(watermark[i:i+2], 16) for i in range(0, min(16, len(watermark)), 2)]
     
-    import random
     random.seed(watermark_seed)
     np_random_state = watermark_seed % (2**32)
     
@@ -263,7 +263,7 @@ def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str, is_trial: boo
         anchor_bytes = (row_anchors_masked % len(watermark_bytes)).astype(np.int64)
         watermark_byte_values = np.array([watermark_bytes[int(b)] for b in anchor_bytes])
         
-        target_microseconds = (watermark_byte_values * 1000 + watermark_seed % 1000) % 1000000
+        target_microseconds = (watermark_byte_values * 12500 + watermark_seed % 10000) % 1000000
         
         base_ts = original_ts.dt.floor('S')
         watermarked_ts = base_ts + pd.to_timedelta(target_microseconds, unit='us')
@@ -320,7 +320,6 @@ def create_watermarked_table(
         
         return watermarked_table_path
     except Exception as e:
-        import traceback
         error_detail = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         print(f"Error creating watermarked table: {error_detail}")
         raise Exception(f"Failed to create watermarked table: {str(e)}")

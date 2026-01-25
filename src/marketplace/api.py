@@ -5,8 +5,11 @@ from typing import Optional
 from datetime import datetime, timedelta
 import secrets
 import hashlib
+import json
 import requests
 import os
+import traceback
+from deltalake import DeltaTable
 from src.models.database import (
     init_db, User, Dataset, Share, Purchase, AuditLog, get_db
 )
@@ -14,11 +17,12 @@ from src.marketplace.auth import (
     get_password_hash, verify_password, create_access_token,
     get_current_user, get_current_seller, get_current_buyer
 )
-from src.models.database import get_db
 from src.marketplace.schemas import (
     UserRegister, UserLogin, Token, UserResponse,
     DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse
 )
+from src.seller.watermarking import detect_anchor_columns_from_schema
+from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
 
 app = FastAPI(title="Delta Sharing Marketplace API")
 
@@ -104,10 +108,6 @@ async def create_dataset(
     current_user: User = Depends(get_current_seller),
     db: Session = Depends(get_db)
 ):
-    from deltalake import DeltaTable
-    from src.seller.watermarking import detect_anchor_columns_from_schema
-    from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
-    
     anchor_columns = dataset_data.anchor_columns if dataset_data.anchor_columns and dataset_data.anchor_columns.strip() else None
     
     dataset = Dataset(
@@ -134,7 +134,6 @@ async def create_dataset(
             
             sensitive_cols = []
             if dataset.sensitive_columns:
-                import json
                 try:
                     sensitive_cols = json.loads(dataset.sensitive_columns) if isinstance(dataset.sensitive_columns, str) else dataset.sensitive_columns
                 except:
@@ -243,7 +242,6 @@ async def purchase_dataset(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
         error_detail = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         print(f"ERROR in purchase_dataset: {error_detail}")
         raise HTTPException(

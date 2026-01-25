@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import json
 import io
 import os
+import time
 import traceback
 from datetime import datetime, timedelta
 from deltalake import DeltaTable
@@ -28,7 +29,6 @@ from src.utils.delta_sharing_utils import (
     get_table_path, transform_schema_for_timestamp_ntz, get_presigned_url,
     cleanup_old_watermarked_files, get_share_from_token
 )
-from src.utils.predicate_parser import parse_query_predicates
 from src.utils.predicate_parser import parse_query_predicates
 
 app = FastAPI(title="Delta Sharing Server")
@@ -317,12 +317,19 @@ async def query_table(
         if len(df.columns) == 0:
             raise HTTPException(status_code=500, detail=f"Query returned DataFrame with no columns. Schema had {len(result_table.schema)} fields, record_batches: {len(record_batches)}")
         
-        watermarked_df = apply_watermark_to_dataframe(df, watermark, is_trial=share.is_trial, anchor_columns=anchor_columns_list)
+        available_anchor_cols = [col for col in anchor_columns_list if col in df.columns]
+        if len(available_anchor_cols) != len(anchor_columns_list):
+            missing = [col for col in anchor_columns_list if col not in df.columns]
+            print(f"Warning: Anchor columns missing from query result: {missing}. Available: {available_anchor_cols}")
+        
+        effective_anchor_columns = available_anchor_cols if available_anchor_cols else None
+        
+        watermarked_df = apply_watermark_to_dataframe(df, watermark, is_trial=share.is_trial, anchor_columns=effective_anchor_columns)
         
         if requested_columns_set:
             columns_to_return = list(requested_columns_set)
             
-            for anchor_col in anchor_columns_list:
+            for anchor_col in effective_anchor_columns or []:
                 if anchor_col not in requested_columns_set and anchor_col in columns_to_return:
                     columns_to_return.remove(anchor_col)
             
@@ -365,7 +372,6 @@ async def query_table(
                     break
                 except Exception as e:
                     if i < max_retries - 1:
-                        import time
                         time.sleep(0.2)
                     else:
                         raise Exception(f"File not accessible after upload: {e}")
@@ -512,7 +518,7 @@ async def query_table(
                 predicates_requested=predicates_requested,
                 predicates_applied=predicates_applied,
                 predicates_applied_count=predicates_applied_count,
-                anchor_columns_used=','.join(anchor_columns_list),
+                anchor_columns_used=','.join(effective_anchor_columns) if effective_anchor_columns else '',
                 ip_address=client_ip
             )
             db.add(audit_log)
