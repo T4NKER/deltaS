@@ -1,0 +1,43 @@
+import os
+from typing import Optional
+from functools import lru_cache
+
+class Settings:
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://deltasharing:deltasharing123@localhost:5433/marketplace")
+    
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "http://localhost:4566")
+    S3_ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "test")
+    S3_SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "test")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "test-delta-bucket")
+    S3_REGION: str = os.getenv("S3_REGION", "us-east-1")
+    
+    WATERMARK_SECRET: str = os.getenv("WATERMARK_SECRET", "default-watermark-secret-change-in-production")
+    TOKEN_SIGNING_SECRET: str = os.getenv("TOKEN_SIGNING_SECRET", "default-token-secret-change-in-production")
+    TOKEN_SALT: str = os.getenv("TOKEN_SALT", "default-token-salt-change-in-production")
+    
+    MARKETPLACE_URL: str = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
+    DELTA_SHARING_SERVER_URL: str = os.getenv("DELTA_SHARING_SERVER_URL", "http://localhost:8080")
+    
+    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "default-jwt-secret-change-in-production")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    
+    TOKEN_ROTATION_ENABLED: bool = os.getenv("TOKEN_ROTATION_ENABLED", "false").lower() == "true"
+    TOKEN_EXPIRY_DAYS: int = int(os.getenv("TOKEN_EXPIRY_DAYS", "365"))
+    
+    @classmethod
+    def get_watermark_secret_bytes(cls) -> bytes:
+        return cls.WATERMARK_SECRET.encode('utf-8')
+    
+    @classmethod
+    def get_token_signing_secret_bytes(cls) -> bytes:
+        return cls.TOKEN_SIGNING_SECRET.encode('utf-8')
+    
+    @classmethod
+    def get_token_salt_bytes(cls) -> bytes:
+        return cls.TOKEN_SALT.encode('utf-8')
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+

@@ -55,7 +55,8 @@ class Share(Base):
     dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
     seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    token = Column(String, unique=True, index=True, nullable=False)
+    token = Column(String, unique=True, index=True)
+    token_hash = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)
     approval_status = Column(String, default="pending")
@@ -65,6 +66,9 @@ class Share(Base):
     is_trial = Column(Boolean, default=False)
     trial_row_limit = Column(Integer)
     trial_expires_at = Column(DateTime)
+    token_rotated_at = Column(DateTime)
+    profile_json = Column(Text)
+    profile_generated_at = Column(DateTime)
     
     dataset = relationship("Dataset", back_populates="shares")
     seller = relationship("User", foreign_keys=[seller_id], back_populates="shares_as_seller")
@@ -101,6 +105,8 @@ class AuditLog(Base):
     anchor_columns_used = Column(Text)
     columns_returned = Column(Text)
     ip_address = Column(String)
+    bytes_served = Column(Integer)
+    client_metadata = Column(Text)
     
     buyer = relationship("User")
     dataset = relationship("Dataset")

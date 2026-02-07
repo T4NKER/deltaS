@@ -65,7 +65,7 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
             anchor_columns_missing = True
             if verbose:
                 missing = [col for col in anchor_columns if col not in df_for_anchor.columns]
-                print(f"  ⚠ WARNING: None of the anchor columns are available in DataFrame: {missing}")
+                print(f"  [WARN] WARNING: None of the anchor columns are available in DataFrame: {missing}")
                 print(f"     Available columns: {list(df_for_anchor.columns)}")
                 print(f"     Cannot verify watermark without anchor columns.")
             anchor_columns = None

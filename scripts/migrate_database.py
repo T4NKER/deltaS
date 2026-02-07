@@ -244,10 +244,104 @@ def migrate_database():
         except Exception as e:
             print(f"columns_returned column: {e}")
         
-        conn.commit()
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS bytes_served INTEGER;
+            """))
+            print("Added bytes_served column to audit_logs")
+        except Exception as e:
+            print(f"bytes_served column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs 
+                ADD COLUMN IF NOT EXISTS client_metadata TEXT;
+            """))
+            print("Added client_metadata column to audit_logs")
+        except Exception as e:
+            print(f"client_metadata column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ADD COLUMN IF NOT EXISTS token_hash VARCHAR;
+            """))
+            print("Added token_hash column to shares")
+        except Exception as e:
+            print(f"token_hash column: {e}")
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ADD COLUMN IF NOT EXISTS token_rotated_at TIMESTAMP;
+            """))
+            print("Added token_rotated_at column to shares")
+        except Exception as e:
+            print(f"token_rotated_at column: {e}")
+        
+        try:
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_shares_token_hash ON shares(token_hash);
+            """))
+            print("Created index on token_hash")
+        except Exception as e:
+            print(f"token_hash index: {e}")
+        
+        try:
+            conn.execute(text("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='shares' AND column_name='profile_json') THEN
+                        ALTER TABLE shares ADD COLUMN profile_json TEXT;
+                    END IF;
+                END $$;
+            """))
+            print("Added profile_json column to shares")
+            conn.commit()
+        except Exception as e:
+            print(f"profile_json column: {e}")
+            conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='shares' AND column_name='profile_generated_at') THEN
+                        ALTER TABLE shares ADD COLUMN profile_generated_at TIMESTAMP;
+                    END IF;
+                END $$;
+            """))
+            print("Added profile_generated_at column to shares")
+            conn.commit()
+        except Exception as e:
+            print(f"profile_generated_at column: {e}")
+            conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                DO $$ 
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='shares' AND column_name='token' 
+                               AND column_name='token_hash' IS NULL) THEN
+                        UPDATE shares 
+                        SET token_hash = encode(sha256(token::bytea), 'hex')
+                        WHERE token_hash IS NULL AND token IS NOT NULL;
+                    END IF;
+                END $$;
+            """))
+            print("Migrated existing tokens to hashes (if applicable)")
+            conn.commit()
+        except Exception as e:
+            print(f"Token migration: {e}")
+            conn.rollback()
         print("\nDatabase migration completed!")
         print("Note: If columns already exist, you may see errors above. This is normal.")
         print("Note: S3 credentials are now seller-side (environment variables), not in marketplace database.")
+        print("Note: Tokens are now hashed. Old plaintext tokens will be migrated on first use.")
 
 if __name__ == "__main__":
     migrate_database()

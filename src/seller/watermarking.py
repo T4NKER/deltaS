@@ -13,10 +13,11 @@ from src.models.database import Dataset, Share
 from src.utils.s3_utils import (
     get_delta_storage_options, get_full_s3_path, get_bucket_name
 )
+from src.utils.settings import get_settings
 
 def get_watermark_secret() -> bytes:
-    secret = os.getenv("WATERMARK_SECRET", "default-watermark-secret-change-in-production")
-    return secret.encode('utf-8')
+    settings = get_settings()
+    return settings.get_watermark_secret_bytes()
 
 def detect_anchor_columns_from_schema(schema: pa.Schema, sensitive_columns: list = None) -> list:
     all_cols = [field.name for field in schema]

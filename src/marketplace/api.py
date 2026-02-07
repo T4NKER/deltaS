@@ -9,7 +9,6 @@ import json
 import requests
 import os
 import traceback
-from deltalake import DeltaTable
 from src.models.database import (
     init_db, User, Dataset, Share, Purchase, AuditLog, get_db
 )
@@ -19,10 +18,16 @@ from src.marketplace.auth import (
 )
 from src.marketplace.schemas import (
     UserRegister, UserLogin, Token, UserResponse,
-    DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse
+    DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse, ProfileResponse, FileDownloadRequest,
+    DeltaSharingServerUrlRequest, ShareResponse, TokenRotationResponse, ApprovalResponse, RejectionResponse,
+    ProfileListItem, UsageLogResponse, FileDownloadResponse, FileDownloadRevokeResponse
 )
-from src.seller.watermarking import detect_anchor_columns_from_schema
-from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
+from src.seller.publish import validate_metadata_signature
+from src.marketplace.schemas import DatasetMetadataBundle
+from src.utils.token_utils import generate_share_token, hash_token, should_rotate_token, is_token_expired
+from src.utils.settings import get_settings
+from src.seller.profile_generator import generate_delta_sharing_profile, generate_profile_json
+from src.marketplace.file_delivery import generate_file_download_link, revoke_file_download_link, get_file_delivery_metrics
 
 app = FastAPI(title="Delta Sharing Marketplace API")
 
@@ -82,11 +87,11 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @app.put("/me/delta-sharing-server-url")
 async def update_delta_sharing_server_url(
-    server_url: str,
+    request: DeltaSharingServerUrlRequest,
     current_user: User = Depends(get_current_seller),
     db: Session = Depends(get_db)
 ):
-    current_user.delta_sharing_server_url = server_url
+    current_user.delta_sharing_server_url = request.server_url
     db.commit()
     db.refresh(current_user)
     return {"delta_sharing_server_url": current_user.delta_sharing_server_url}
@@ -108,55 +113,62 @@ async def create_dataset(
     current_user: User = Depends(get_current_seller),
     db: Session = Depends(get_db)
 ):
-    anchor_columns = dataset_data.anchor_columns if dataset_data.anchor_columns and dataset_data.anchor_columns.strip() else None
-    
-    dataset = Dataset(
-        name=dataset_data.name,
-        description=dataset_data.description,
-        table_path=dataset_data.table_path,
-        price=dataset_data.price,
-        is_public=dataset_data.is_public,
-        seller_id=current_user.id,
-        anchor_columns=anchor_columns
-    )
-    
-    db.add(dataset)
-    db.flush()
-    
-    if not dataset.anchor_columns:
-        try:
-            bucket_name = get_bucket_name()
-            table_path = get_full_s3_path(bucket_name, dataset_data.table_path)
-            storage_options = get_delta_storage_options()
-            delta_table = DeltaTable(table_path, storage_options=storage_options)
-            arrow_dataset = delta_table.to_pyarrow_dataset()
-            schema = arrow_dataset.schema
-            
-            sensitive_cols = []
-            if dataset.sensitive_columns:
-                try:
-                    sensitive_cols = json.loads(dataset.sensitive_columns) if isinstance(dataset.sensitive_columns, str) else dataset.sensitive_columns
-                except:
-                    pass
-            
-            anchor_cols = detect_anchor_columns_from_schema(schema, sensitive_columns=sensitive_cols)
-            if not anchor_cols:
-                raise ValueError("Could not detect suitable anchor columns from table schema")
-            dataset.anchor_columns = ','.join(anchor_cols)
-        except Exception as e:
-            db.rollback()
+    if dataset_data.metadata_bundle:
+        metadata = dataset_data.metadata_bundle.dict()
+        
+        if not validate_metadata_signature(metadata, current_user.id):
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to configure anchor columns for dataset. Table may not exist or be accessible. Error: {str(e)}"
+                detail="Invalid metadata signature. Metadata bundle must be signed by the seller."
             )
-    
-    if not dataset.anchor_columns:
-        db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="Dataset anchor_columns must be configured. Please ensure the table exists and is accessible."
+        
+        if metadata.get("seller_id") != current_user.id:
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata bundle seller_id does not match authenticated seller."
+            )
+        
+        anchor_columns = ','.join(metadata.get("anchor_columns", []))
+        pii_analysis = metadata.get("pii_analysis", {})
+        risk_score = pii_analysis.get("risk_score", 0.0)
+        risk_level = pii_analysis.get("risk_level", "low")
+        sensitive_columns = json.dumps(pii_analysis.get("sensitive_columns", {}))
+        detected_pii_types = ','.join(pii_analysis.get("pii_types", {}).keys())
+        
+        dataset = Dataset(
+            name=metadata.get("name") or dataset_data.name,
+            description=metadata.get("description") or dataset_data.description,
+            table_path=metadata.get("table_path") or dataset_data.table_path,
+            price=dataset_data.price,
+            is_public=dataset_data.is_public,
+            seller_id=current_user.id,
+            anchor_columns=anchor_columns,
+            risk_score=risk_score,
+            risk_level=risk_level,
+            sensitive_columns=sensitive_columns,
+            detected_pii_types=detected_pii_types,
+            requires_approval=risk_score >= 20.0
+        )
+    else:
+        anchor_columns = dataset_data.anchor_columns if dataset_data.anchor_columns and dataset_data.anchor_columns.strip() else None
+        
+        if not anchor_columns:
+            raise HTTPException(
+                status_code=400,
+                detail="metadata_bundle is required. Please provide a signed metadata bundle from the seller publish endpoint."
+            )
+        
+        dataset = Dataset(
+            name=dataset_data.name,
+            description=dataset_data.description,
+            table_path=dataset_data.table_path,
+            price=dataset_data.price,
+            is_public=dataset_data.is_public,
+            seller_id=current_user.id,
+            anchor_columns=anchor_columns
         )
     
+    db.add(dataset)
     db.commit()
     db.refresh(dataset)
     return dataset
@@ -192,9 +204,10 @@ async def purchase_dataset(
                 detail="You already have access to this dataset"
             )
         
-        token_string = secrets.token_urlsafe(32)
-        checksum = hashlib.sha256(token_string.encode()).hexdigest()[:8]
-        share_token = f"{token_string}-{checksum}"
+        share_token = generate_share_token()
+        token_hash = hash_token(share_token)
+        settings = get_settings()
+        expires_at = datetime.utcnow() + timedelta(days=settings.TOKEN_EXPIRY_DAYS)
         
         approval_status = "pending" if dataset.requires_approval else "approved"
         
@@ -203,7 +216,8 @@ async def purchase_dataset(
             seller_id=dataset.seller_id,
             buyer_id=current_user.id,
             token=share_token,
-            expires_at=datetime.utcnow() + timedelta(days=365),
+            token_hash=token_hash,
+            expires_at=expires_at,
             approval_status=approval_status
         )
         db.add(share)
@@ -283,10 +297,8 @@ async def request_trial(
                 detail="You already have an active trial for this dataset"
             )
     
-    token_string = secrets.token_urlsafe(32)
-    checksum = hashlib.sha256(token_string.encode()).hexdigest()[:8]
-    share_token = f"{token_string}-{checksum}"
-    
+    share_token = generate_share_token()
+    token_hash = hash_token(share_token)
     row_limit = min(trial_request.row_limit or 100, 1000)
     expires_at = datetime.utcnow() + timedelta(days=trial_request.days_valid or 7)
     
@@ -295,6 +307,7 @@ async def request_trial(
         seller_id=dataset.seller_id,
         buyer_id=current_user.id,
         token=share_token,
+        token_hash=token_hash,
         expires_at=expires_at,
         approval_status="approved",
         is_trial=True,
@@ -329,7 +342,7 @@ async def get_my_datasets(
     datasets = db.query(Dataset).filter(Dataset.seller_id == current_user.id).all()
     return datasets
 
-@app.get("/my-shares")
+@app.get("/my-shares", response_model=list[ShareResponse])
 async def get_my_shares(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -338,21 +351,71 @@ async def get_my_shares(
         or_(Share.seller_id == current_user.id, Share.buyer_id == current_user.id)
     ).all()
     return [
-        {
-            "id": share.id,
-            "dataset_id": share.dataset_id,
-            "dataset_name": share.dataset.name,
-            "seller_id": share.seller_id,
-            "buyer_id": share.buyer_id,
-            "token": share.token,
-            "created_at": share.created_at,
-            "expires_at": share.expires_at,
-            "approval_status": share.approval_status,
-            "revoked": share.revoked,
-            "revoked_at": share.revoked_at
-        }
+        ShareResponse(
+            id=share.id,
+            dataset_id=share.dataset_id,
+            dataset_name=share.dataset.name,
+            seller_id=share.seller_id,
+            buyer_id=share.buyer_id,
+            token=share.token if share.token else "[REDACTED]",
+            created_at=share.created_at,
+            expires_at=share.expires_at,
+            approval_status=share.approval_status,
+            revoked=share.revoked,
+            revoked_at=share.revoked_at
+        )
         for share in shares
     ]
+
+@app.post("/shares/{share_id}/rotate-token", response_model=TokenRotationResponse, status_code=status.HTTP_200_OK)
+async def rotate_share_token(
+    share_id: int,
+    current_user: User = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.seller_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only rotate tokens for your own shares"
+        )
+    
+    if share.revoked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot rotate token for revoked share"
+        )
+    
+    new_token = generate_share_token()
+    new_token_hash = hash_token(new_token)
+    
+    share.token = new_token
+    share.token_hash = new_token_hash
+    share.token_rotated_at = datetime.utcnow()
+    
+    seller = db.query(User).filter(User.id == share.seller_id).first()
+    if seller and seller.delta_sharing_server_url and share.approval_status == "approved":
+        try:
+            profile = generate_delta_sharing_profile(share, seller, new_token)
+            share.profile_json = generate_profile_json(profile)
+            share.profile_generated_at = datetime.utcnow()
+        except Exception as e:
+            print(f"Warning: Failed to regenerate profile after token rotation: {e}")
+    
+    db.commit()
+    
+    return TokenRotationResponse(
+        status="success",
+        message="Token rotated successfully",
+        share_id=share_id,
+        new_token=new_token
+    )
 
 @app.delete("/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_share(
@@ -375,11 +438,22 @@ async def revoke_share(
     
     share.revoked = True
     share.revoked_at = datetime.utcnow()
-    db.commit()
+    share.profile_json = None
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        import traceback
+        error_detail = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        print(f"ERROR in revoke_share: {error_detail}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revoke share: {str(e)}"
+        )
     
     return None
 
-@app.post("/shares/{share_id}/approve", status_code=status.HTTP_200_OK)
+@app.post("/shares/{share_id}/approve", response_model=ApprovalResponse, status_code=status.HTTP_200_OK)
 async def approve_share(
     share_id: int,
     current_user: User = Depends(get_current_seller),
@@ -399,16 +473,32 @@ async def approve_share(
         )
     
     share.approval_status = "approved"
+    
+    seller = db.query(User).filter(User.id == share.seller_id).first()
+    if seller and seller.delta_sharing_server_url:
+        try:
+            if not share.token:
+                share_token = generate_share_token()
+                share.token = share_token
+                share.token_hash = hash_token(share_token)
+            
+            profile = generate_delta_sharing_profile(share, seller, share.token)
+            share.profile_json = generate_profile_json(profile)
+            share.profile_generated_at = datetime.utcnow()
+        except Exception as e:
+            print(f"Warning: Failed to generate profile on approval: {e}")
+    
     db.commit()
     
-    return {
-        "status": "success",
-        "message": "Share approved",
-        "share_id": share_id,
-        "approval_status": share.approval_status
-    }
+    return ApprovalResponse(
+        status="success",
+        message="Share approved",
+        share_id=share_id,
+        approval_status=share.approval_status,
+        profile_generated=share.profile_json is not None
+    )
 
-@app.post("/shares/{share_id}/reject", status_code=status.HTTP_200_OK)
+@app.post("/shares/{share_id}/reject", response_model=RejectionResponse, status_code=status.HTTP_200_OK)
 async def reject_share(
     share_id: int,
     current_user: User = Depends(get_current_seller),
@@ -430,14 +520,94 @@ async def reject_share(
     share.approval_status = "rejected"
     db.commit()
     
-    return {
-        "status": "success",
-        "message": "Share rejected",
-        "share_id": share_id,
-        "approval_status": share.approval_status
-    }
+    return RejectionResponse(
+        status="success",
+        message="Share rejected",
+        share_id=share_id,
+        approval_status=share.approval_status
+    )
 
-@app.get("/usage-logs")
+@app.get("/shares/{share_id}/profile", response_model=ProfileResponse)
+async def get_share_profile(
+    share_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.buyer_id != current_user.id and share.seller_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access profiles for your own shares"
+        )
+    
+    if not share.profile_json:
+        if share.approval_status != "approved":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Profile not available. Share status: {share.approval_status}"
+            )
+        
+        seller = db.query(User).filter(User.id == share.seller_id).first()
+        if not seller or not seller.delta_sharing_server_url:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Seller server URL not configured"
+            )
+        
+        try:
+            if not share.token:
+                share_token = generate_share_token()
+                share.token = share_token
+                share.token_hash = hash_token(share_token)
+            
+            profile = generate_delta_sharing_profile(share, seller, share.token)
+            share.profile_json = generate_profile_json(profile)
+            share.profile_generated_at = datetime.utcnow()
+            db.commit()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate profile: {str(e)}"
+            )
+    
+    return ProfileResponse(
+        share_id=share.id,
+        profile_json=share.profile_json,
+        generated_at=share.profile_generated_at or share.created_at
+    )
+
+@app.get("/my-profiles", response_model=list[ProfileListItem])
+async def get_my_profiles(
+    current_user: User = Depends(get_current_buyer),
+    db: Session = Depends(get_db)
+):
+    shares = db.query(Share).filter(
+        Share.buyer_id == current_user.id,
+        Share.approval_status == "approved",
+        Share.revoked == False
+    ).all()
+    
+    profiles = []
+    for share in shares:
+        if share.profile_json:
+            profiles.append(ProfileListItem(
+                share_id=share.id,
+                dataset_id=share.dataset_id,
+                dataset_name=share.dataset.name,
+                profile_json=share.profile_json,
+                generated_at=share.profile_generated_at or share.created_at,
+                expires_at=share.expires_at
+            ))
+    
+    return profiles
+
+@app.get("/usage-logs", response_model=list[UsageLogResponse])
 async def get_usage_logs(
     dataset_id: Optional[int] = None,
     share_id: Optional[int] = None,
@@ -455,17 +625,120 @@ async def get_usage_logs(
     logs = query.order_by(AuditLog.query_time.desc()).limit(100).all()
     
     return [
-        {
-            "id": log.id,
-            "buyer_id": log.buyer_id,
-            "dataset_id": log.dataset_id,
-            "share_id": log.share_id,
-            "query_time": log.query_time,
-            "columns_requested": log.columns_requested,
-            "row_count_returned": log.row_count_returned,
-            "query_limit": log.query_limit,
-            "ip_address": log.ip_address
-        }
+        UsageLogResponse(
+            id=log.id,
+            buyer_id=log.buyer_id,
+            dataset_id=log.dataset_id,
+            share_id=log.share_id,
+            query_time=log.query_time,
+            columns_requested=log.columns_requested,
+            row_count_returned=log.row_count_returned,
+            query_limit=log.query_limit,
+            ip_address=log.ip_address
+        )
         for log in logs
     ]
+
+@app.post("/shares/{share_id}/file-download", response_model=FileDownloadResponse)
+async def request_file_download(
+    share_id: int,
+    request: FileDownloadRequest,
+    current_user: User = Depends(get_current_buyer),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.buyer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only request file downloads for your own shares"
+        )
+    
+    if share.approval_status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Share must be approved. Current status: {share.approval_status}"
+        )
+    
+    if share.revoked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Share has been revoked"
+        )
+    
+    dataset = db.query(Dataset).filter(Dataset.id == share.dataset_id).first()
+    if not dataset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset not found"
+        )
+    
+    try:
+        download_info = generate_file_download_link(dataset, share, db, request.expiry_hours)
+        return FileDownloadResponse(**download_info)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate file download link: {str(e)}"
+        )
+
+@app.delete("/shares/{share_id}/file-download/{snapshot_id}", response_model=FileDownloadRevokeResponse)
+async def revoke_file_download(
+    share_id: int,
+    snapshot_id: str,
+    current_user: User = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.seller_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only revoke file downloads for your own shares"
+        )
+    
+    success = revoke_file_download_link(snapshot_id, db)
+    
+    if success:
+        return FileDownloadRevokeResponse(
+            status="success",
+            message=f"File download link {snapshot_id} revoked"
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to revoke file download link"
+        )
+
+@app.get("/shares/{share_id}/file-delivery-metrics")
+async def get_file_delivery_metrics_endpoint(
+    share_id: int,
+    current_user: User = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.seller_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view metrics for your own shares"
+        )
+    
+    metrics = get_file_delivery_metrics(share_id, db)
+    return metrics
 

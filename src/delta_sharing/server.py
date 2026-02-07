@@ -18,8 +18,13 @@ import tempfile
 import uuid
 from deltalake import write_deltalake
 
-from src.models.database import get_db, AuditLog
+from src.models.database import get_db, AuditLog, User
 from src.seller.watermarking import generate_watermark, apply_watermark_to_dataframe
+from src.seller.publish import publish_dataset_metadata
+from src.seller.synthetic_data import generate_synthetic_data
+from src.utils.delta_sharing_utils import get_share_from_token
+from src.utils.settings import get_settings
+from src.marketplace.schemas import PublishMetadataRequest, SyntheticDataRequest
 from src.utils.s3_utils import (
     get_s3_client, get_delta_storage_options,
     fix_endpoint_url_for_client, get_full_s3_path, get_bucket_name
@@ -506,6 +511,15 @@ async def query_table(
                     predicates_applied = "\n".join([f"{p.column} {p.op} {p.value if p.value is not None else p.values}" for p in parsed_predicates])
             
             client_ip = request.client.host if request.client else None
+            user_agent = request.headers.get("user-agent")
+            client_metadata_dict = {
+                "user_agent": user_agent,
+                "host": request.headers.get("host"),
+                "accept": request.headers.get("accept")
+            }
+            client_metadata = json.dumps(client_metadata_dict) if any(client_metadata_dict.values()) else None
+            
+            bytes_served = len(content.encode('utf-8'))
             
             audit_log = AuditLog(
                 buyer_id=share.buyer_id,
@@ -519,7 +533,9 @@ async def query_table(
                 predicates_applied=predicates_applied,
                 predicates_applied_count=predicates_applied_count,
                 anchor_columns_used=','.join(effective_anchor_columns) if effective_anchor_columns else '',
-                ip_address=client_ip
+                ip_address=client_ip,
+                bytes_served=bytes_served,
+                client_metadata=client_metadata
             )
             db.add(audit_log)
             db.commit()
@@ -543,6 +559,85 @@ async def prepare_share(
     db: Session = Depends(get_db)
 ):
     return {"status": "success", "message": "Watermarking is applied at query time"}
+
+@app.post("/seller/publish-metadata")
+async def publish_metadata(
+    request_data: PublishMetadataRequest,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        from jose import jwt
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can publish metadata")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    anchor_cols_list = None
+    if request_data.anchor_columns:
+        anchor_cols_list = [col.strip() for col in request_data.anchor_columns.split(',') if col.strip()]
+    
+    try:
+        metadata = publish_dataset_metadata(
+            table_path=request_data.table_path,
+            seller_id=user.id,
+            name=request_data.name,
+            description=request_data.description,
+            anchor_columns=anchor_cols_list
+        )
+        return metadata
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to publish metadata: {str(e)}"
+        )
+
+@app.post("/seller/generate-synthetic")
+async def generate_synthetic_dataset(
+    request: SyntheticDataRequest,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        from jose import jwt
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can generate synthetic data")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    try:
+        synthetic_df, metadata = generate_synthetic_data(
+            table_path=request.table_path,
+            output_table_path=request.output_table_path,
+            num_rows=request.num_rows,
+            dp_epsilon=request.dp_epsilon,
+            preserve_statistics=request.preserve_statistics,
+            seed=request.seed
+        )
+        
+        return {
+            "status": "success",
+            "output_table_path": output_table_path,
+            "num_rows": len(synthetic_df),
+            "metadata": metadata
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to generate synthetic data: {str(e)}"
+        )
 
 @app.get("/health")
 async def health():

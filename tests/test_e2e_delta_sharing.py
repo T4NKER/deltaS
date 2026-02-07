@@ -60,13 +60,13 @@ def test_e2e_delta_sharing():
     bucket_name = get_bucket_name()
     try:
         s3_client.head_bucket(Bucket=bucket_name)
-        print(f"✓ Bucket {bucket_name} already exists")
+        print(f"[OK] Bucket {bucket_name} already exists")
     except:
         try:
             s3_client.create_bucket(Bucket=bucket_name)
-            print(f"✓ Created bucket: {bucket_name}")
+            print(f"[OK] Created bucket: {bucket_name}")
         except Exception as e:
-            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+            print(f"[WARN] Warning: Could not create bucket {bucket_name}: {e}")
     
     print("\n[1] Registering users...")
     seller_email = f"seller_{int(time.time())}@test.com"
@@ -79,7 +79,7 @@ def test_e2e_delta_sharing():
         "role": "seller"
     }, expected_status=201)
     seller_id = seller_data["id"]
-    print(f"✓ Seller registered: {seller_email} (ID: {seller_id})")
+    print(f"[OK] Seller registered: {seller_email} (ID: {seller_id})")
     
     buyer_data = api_post(f"{MARKETPLACE_URL}/register", {
         "email": buyer_email,
@@ -87,7 +87,7 @@ def test_e2e_delta_sharing():
         "role": "buyer"
     }, expected_status=201)
     buyer_id = buyer_data["id"]
-    print(f"✓ Buyer registered: {buyer_email} (ID: {buyer_id})")
+    print(f"[OK] Buyer registered: {buyer_email} (ID: {buyer_id})")
     
     print("\n[2] Logging in...")
     seller_login = api_post(f"{MARKETPLACE_URL}/login", {
@@ -96,7 +96,7 @@ def test_e2e_delta_sharing():
     })
     seller_token = seller_login["access_token"]
     seller_headers = {"Authorization": f"Bearer {seller_token}"}
-    print("✓ Seller logged in")
+    print("[OK] Seller logged in")
     
     buyer_login = api_post(f"{MARKETPLACE_URL}/login", {
         "email": buyer_email,
@@ -104,7 +104,7 @@ def test_e2e_delta_sharing():
     })
     buyer_token = buyer_login["access_token"]
     buyer_headers = {"Authorization": f"Bearer {buyer_token}"}
-    print("✓ Buyer logged in")
+    print("[OK] Buyer logged in")
     
     print("\n[3] Seller creating dataset...")
     dataset_data = api_post(f"{MARKETPLACE_URL}/datasets", {
@@ -116,7 +116,7 @@ def test_e2e_delta_sharing():
         "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_id = dataset_data["id"]
-    print(f"✓ Dataset created: {dataset_id}")
+    print(f"[OK] Dataset created: {dataset_id}")
     
     print("\n[4a] Creating dataset requiring approval (for approval workflow test)...")
     dataset_approval_data = api_post(f"{MARKETPLACE_URL}/datasets", {
@@ -135,7 +135,7 @@ def test_e2e_delta_sharing():
         if approval_dataset:
             approval_dataset.requires_approval = True
             db.commit()
-            print(f"✓ Dataset {dataset_approval_id} set to require approval")
+            print(f"[OK] Dataset {dataset_approval_id} set to require approval")
     finally:
         db.close()
     
@@ -146,7 +146,7 @@ def test_e2e_delta_sharing():
         if seller_user:
             seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
             db.commit()
-            print(f"✓ Seller server URL set: {DELTA_SHARING_SERVER_URL}")
+            print(f"[OK] Seller server URL set: {DELTA_SHARING_SERVER_URL}")
     finally:
         db.close()
     
@@ -156,30 +156,30 @@ def test_e2e_delta_sharing():
     approval_status = purchase_data["approval_status"]
     share_id = purchase_data["share_id"]
     seller_server_url = purchase_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
-    print(f"✓ Purchase successful, share token: {share_token[:20]}...")
+    print(f"[OK] Purchase successful, share token: {share_token[:20]}...")
     print(f"  Approval status: {approval_status}")
     print(f"  Seller server URL: {seller_server_url}")
     
     if approval_status == "pending":
         print("\n[5a] Share requires approval - seller approving...")
         approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
-        print(f"✓ Share approved: {approve_resp['approval_status']}")
+        print(f"[OK] Share approved: {approve_resp['approval_status']}")
     
     print("\n[5b] Testing approval workflow with dataset requiring approval...")
     purchase_approval_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_approval_id}", {}, headers=buyer_headers)
     share_approval_id = purchase_approval_data["share_id"]
     assert purchase_approval_data["approval_status"] == "pending", "Share should be pending approval"
-    print(f"✓ Purchase created with pending approval status")
+    print(f"[OK] Purchase created with pending approval status")
     
     print("  Testing rejection...")
     reject_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_approval_id}/reject", {}, headers=seller_headers)
     assert reject_resp["approval_status"] == "rejected", "Share should be rejected"
-    print(f"✓ Share rejected successfully")
+    print(f"[OK] Share rejected successfully")
     
     print("  Testing approval after rejection...")
     approve_resp2 = api_post(f"{MARKETPLACE_URL}/shares/{share_approval_id}/approve", {}, headers=seller_headers)
     assert approve_resp2["approval_status"] == "approved", "Share should be approved"
-    print(f"✓ Share approved after rejection")
+    print(f"[OK] Share approved after rejection")
     
     print("\n[6] Creating Delta Sharing profile...")
     profile_data = {
@@ -196,7 +196,7 @@ def test_e2e_delta_sharing():
     try:
         profile = DeltaSharingProfile.read_from_file(profile_path)
         client = SharingClient(profile)
-        print("✓ Delta Sharing client created")
+        print("[OK] Delta Sharing client created")
         
         print("\n[7] Starting seller data writer (background thread)...")
         db = SessionLocal()
@@ -207,7 +207,7 @@ def test_e2e_delta_sharing():
         )
         writer_thread.daemon = True
         writer_thread.start()
-        print("✓ Data writer started")
+        print("[OK] Data writer started")
         
         print("\n[8] Buyer reading data through Delta Sharing...")
         
@@ -217,23 +217,23 @@ def test_e2e_delta_sharing():
         shares_list = extract_list_items(client.list_shares())
         assert len(shares_list) > 0, "No shares found"
         share = shares_list[0]
-        print(f"✓ Found share: {share.name}")
+        print(f"[OK] Found share: {share.name}")
         
         schemas_list = extract_list_items(client.list_schemas(share))
         assert len(schemas_list) > 0, "No schemas found"
         schema = schemas_list[0]
-        print(f"✓ Found schema: {schema.name}")
+        print(f"[OK] Found schema: {schema.name}")
         
         tables_list = extract_list_items(client.list_tables(schema))
         assert len(tables_list) > 0, "No tables found"
         table = tables_list[0]
-        print(f"✓ Found table: {table.name}")
+        print(f"[OK] Found table: {table.name}")
         
         print("\n[9] Reading table data...")
         table_url = f"{profile_path}#{share.name}.{schema.name}.{table.name}"
         df = load_as_pandas(table_url)
         initial_count = len(df)
-        print(f"✓ Initial read: {initial_count} rows")
+        print(f"[OK] Initial read: {initial_count} rows")
         print(f"  Columns: {list(df.columns)}")
         if initial_count > 0:
             print(f"  Sample data:\n{df.head()}")
@@ -256,7 +256,7 @@ def test_e2e_delta_sharing():
             wc = result['watermark_column']
             print(f"  Watermark column: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
             if wc['found']:
-                print(f"    ✓ Watermark column detected")
+                print(f"    [OK] Watermark column detected")
                 for sample in wc.get('samples', [])[:3]:
                     print(f"      {sample}")
         
@@ -264,14 +264,14 @@ def test_e2e_delta_sharing():
             ts = result['timestamp']
             print(f"  Timestamp columns: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
             if ts['found']:
-                print(f"    ✓ Timestamp watermark detected")
+                print(f"    [OK] Timestamp watermark detected")
                 for sample in ts.get('samples', [])[:3]:
                     print(f"      {sample}")
         
         if result["found"]:
-            print(f"  ✓ SUCCESS: Watermarking is working correctly!")
+            print(f"  [OK] SUCCESS: Watermarking is working correctly!")
         else:
-            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected')}")
+            print(f"  [WARN] {result.get('reason', 'WARNING: No watermark pattern detected')}")
         
         print("\n[10] Waiting 35 seconds for more data to be written...")
         time.sleep(35)
@@ -279,11 +279,11 @@ def test_e2e_delta_sharing():
         print("  Reading table again...")
         df2 = load_as_pandas(table_url)
         new_count = len(df2)
-        print(f"✓ Second read: {new_count} rows (was {initial_count})")
+        print(f"[OK] Second read: {new_count} rows (was {initial_count})")
         
         assert new_count >= initial_count, f"Expected more or equal rows, got {new_count} < {initial_count}"
         if new_count > initial_count:
-            print(f"✓ SUCCESS: Buyer can see new data! ({new_count - initial_count} new rows)")
+            print(f"[OK] SUCCESS: Buyer can see new data! ({new_count - initial_count} new rows)")
         else:
             print("  Note: Row count unchanged (may be same version)")
         
@@ -292,7 +292,7 @@ def test_e2e_delta_sharing():
         
         df3 = load_as_pandas(table_url)
         final_count = len(df3)
-        print(f"✓ Final read: {final_count} rows")
+        print(f"[OK] Final read: {final_count} rows")
         
         print("\n[11a] Verifying watermark persists across queries...")
         db = SessionLocal()
@@ -309,15 +309,15 @@ def test_e2e_delta_sharing():
             wc = result.get('watermark_column', {})
             ts = result.get('timestamp', {})
             if wc.get('found'):
-                print(f"  ✓ Watermark column still present: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
+                print(f"  [OK] Watermark column still present: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
             if ts.get('found'):
-                print(f"  ✓ Timestamp watermark still present: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
+                print(f"  [OK] Timestamp watermark still present: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
         else:
-            print(f"  ⚠ WARNING: Watermark not detected in final query: {result.get('reason', 'Unknown reason')}")
+            print(f"  [WARN] WARNING: Watermark not detected in final query: {result.get('reason', 'Unknown reason')}")
         
         print("\n[12] Testing usage logging...")
         logs = api_get(f"{MARKETPLACE_URL}/usage-logs?dataset_id={dataset_id}", headers=seller_headers)
-        print(f"✓ Found {len(logs)} usage log entries")
+        print(f"[OK] Found {len(logs)} usage log entries")
         if len(logs) > 0:
             latest_log = logs[0]
             print(f"  Latest query: {latest_log['query_time']}")
@@ -331,14 +331,14 @@ def test_e2e_delta_sharing():
         assert test_share["revoked"] == False, "Share should not be revoked yet"
         
         api_delete(f"{MARKETPLACE_URL}/shares/{share_id}", headers=seller_headers)
-        print("✓ Share revoked successfully")
+        print("[OK] Share revoked successfully")
         
         print("\n[14] Verifying revoked share is blocked...")
         try:
             revoked_df = load_as_pandas(table_url)
             print("  WARNING: Revoked share still accessible (this may be expected if client caches)")
         except Exception as e:
-            print(f"✓ Revoked share blocked: {str(e)[:100]}")
+            print(f"[OK] Revoked share blocked: {str(e)[:100]}")
         
         print("\n" + "="*80)
         print("E2E Test Summary:")
@@ -346,12 +346,12 @@ def test_e2e_delta_sharing():
         print(f"  After 35s: {new_count}")
         print(f"  After 70s: {final_count}")
         print(f"  Usage logs: {len(logs)} entries")
-        print(f"  Share revoked: ✓")
+        print(f"  Share revoked: [OK]")
         print("="*80)
         
         os.unlink(profile_path)
         
-        print("\n✓ E2E test completed successfully!")
+        print("\n[OK] E2E test completed successfully!")
         return True
         
     except Exception as e:
@@ -395,13 +395,13 @@ def test_trial_share():
     bucket_name = get_bucket_name()
     try:
         s3_client.head_bucket(Bucket=bucket_name)
-        print(f"✓ Bucket {bucket_name} already exists")
+        print(f"[OK] Bucket {bucket_name} already exists")
     except:
         try:
             s3_client.create_bucket(Bucket=bucket_name)
-            print(f"✓ Created bucket: {bucket_name}")
+            print(f"[OK] Created bucket: {bucket_name}")
         except Exception as e:
-            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+            print(f"[WARN] Warning: Could not create bucket {bucket_name}: {e}")
     
     print("\n[1] Registering users...")
     seller_email = f"seller_trial_{int(time.time())}@test.com"
@@ -414,7 +414,7 @@ def test_trial_share():
         "role": "seller"
     }, expected_status=201)
     seller_id = seller_data["id"]
-    print(f"✓ Seller registered: {seller_email} (ID: {seller_id})")
+    print(f"[OK] Seller registered: {seller_email} (ID: {seller_id})")
     
     buyer_data = api_post(f"{MARKETPLACE_URL}/register", {
         "email": buyer_email,
@@ -422,7 +422,7 @@ def test_trial_share():
         "role": "buyer"
     }, expected_status=201)
     buyer_id = buyer_data["id"]
-    print(f"✓ Buyer registered: {buyer_email} (ID: {buyer_id})")
+    print(f"[OK] Buyer registered: {buyer_email} (ID: {buyer_id})")
     
     print("\n[2] Logging in...")
     seller_login = api_post(f"{MARKETPLACE_URL}/login", {
@@ -431,7 +431,7 @@ def test_trial_share():
     })
     seller_token = seller_login["access_token"]
     seller_headers = {"Authorization": f"Bearer {seller_token}"}
-    print("✓ Seller logged in")
+    print("[OK] Seller logged in")
     
     buyer_login = api_post(f"{MARKETPLACE_URL}/login", {
         "email": buyer_email,
@@ -439,7 +439,7 @@ def test_trial_share():
     })
     buyer_token = buyer_login["access_token"]
     buyer_headers = {"Authorization": f"Bearer {buyer_token}"}
-    print("✓ Buyer logged in")
+    print("[OK] Buyer logged in")
     
     print("\n[3] Seller creating dataset...")
     dataset_data = api_post(f"{MARKETPLACE_URL}/datasets", {
@@ -451,7 +451,7 @@ def test_trial_share():
         "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_id = dataset_data["id"]
-    print(f"✓ Dataset created: {dataset_id}")
+    print(f"[OK] Dataset created: {dataset_id}")
     
     print("\n[4] Setting seller's Delta Sharing server URL...")
     db = SessionLocal()
@@ -460,7 +460,7 @@ def test_trial_share():
         if seller_user:
             seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
             db.commit()
-            print(f"✓ Seller server URL set: {DELTA_SHARING_SERVER_URL}")
+            print(f"[OK] Seller server URL set: {DELTA_SHARING_SERVER_URL}")
     finally:
         db.close()
     
@@ -473,7 +473,7 @@ def test_trial_share():
     )
     writer_thread.daemon = True
     writer_thread.start()
-    print("✓ Data writer started")
+    print("[OK] Data writer started")
     
     print("  Waiting 15 seconds for data to be written...")
     time.sleep(15)
@@ -487,7 +487,7 @@ def test_trial_share():
     trial_share_id = trial_data["share_id"]
     seller_server_url = trial_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
     trial_row_limit = trial_data["trial_row_limit"]
-    print(f"✓ Trial access granted")
+    print(f"[OK] Trial access granted")
     print(f"  Share token: {trial_share_token[:20]}...")
     print(f"  Row limit: {trial_row_limit}")
     print(f"  Expires at: {trial_data['trial_expires_at']}")
@@ -508,33 +508,33 @@ def test_trial_share():
     try:
         profile = DeltaSharingProfile.read_from_file(trial_profile_path)
         client = SharingClient(profile)
-        print("✓ Delta Sharing client created for trial")
+        print("[OK] Delta Sharing client created for trial")
         
         print("\n[8] Buyer reading trial data through Delta Sharing...")
         shares_list = extract_list_items(client.list_shares())
         assert len(shares_list) > 0, "No shares found"
         share = shares_list[0]
-        print(f"✓ Found share: {share.name}")
+        print(f"[OK] Found share: {share.name}")
         
         schemas_list = extract_list_items(client.list_schemas(share))
         assert len(schemas_list) > 0, "No schemas found"
         schema = schemas_list[0]
-        print(f"✓ Found schema: {schema.name}")
+        print(f"[OK] Found schema: {schema.name}")
         
         tables_list = extract_list_items(client.list_tables(schema))
         assert len(tables_list) > 0, "No tables found"
         table = tables_list[0]
-        print(f"✓ Found table: {table.name}")
+        print(f"[OK] Found table: {table.name}")
         
         print("\n[9] Reading trial table data...")
         table_url = f"{trial_profile_path}#{share.name}.{schema.name}.{table.name}"
         df = load_as_pandas(table_url)
         trial_row_count = len(df)
-        print(f"✓ Trial read: {trial_row_count} rows")
+        print(f"[OK] Trial read: {trial_row_count} rows")
         print(f"  Expected limit: {trial_row_limit} rows")
         
         assert trial_row_count <= trial_row_limit, f"Trial returned {trial_row_count} rows, but limit is {trial_row_limit}"
-        print(f"✓ SUCCESS: Trial row limit enforced ({trial_row_count} <= {trial_row_limit})")
+        print(f"[OK] SUCCESS: Trial row limit enforced ({trial_row_count} <= {trial_row_limit})")
         
         if trial_row_count > 0:
             print(f"  Columns: {list(df.columns)}")
@@ -558,7 +558,7 @@ def test_trial_share():
             wc = result['watermark_column']
             print(f"  Watermark column: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
             if wc['found']:
-                print(f"    ✓ Watermark column detected")
+                print(f"    [OK] Watermark column detected")
                 for sample in wc.get('samples', [])[:3]:
                     print(f"      {sample}")
         
@@ -566,7 +566,7 @@ def test_trial_share():
             ts = result['timestamp']
             print(f"  Timestamp columns: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
             if ts['found']:
-                print(f"    ✓ Timestamp watermark detected")
+                print(f"    [OK] Timestamp watermark detected")
                 matches_only = [s for s in ts.get('samples', []) if '[MISMATCH]' not in s]
                 if matches_only:
                     for sample in matches_only[:3]:
@@ -576,16 +576,16 @@ def test_trial_share():
                         print(f"      {sample}")
         
         if result["found"]:
-            print(f"  ✓ SUCCESS: Trial share watermarking is working correctly!")
+            print(f"  [OK] SUCCESS: Trial share watermarking is working correctly!")
         else:
-            print(f"  ⚠ {result.get('reason', 'WARNING: No watermark pattern detected')}")
+            print(f"  [WARN] {result.get('reason', 'WARNING: No watermark pattern detected')}")
         
         print("\n[11] Testing that trial cannot exceed row limit on subsequent queries...")
         df2 = load_as_pandas(table_url)
         trial_row_count_2 = len(df2)
-        print(f"✓ Second trial read: {trial_row_count_2} rows")
+        print(f"[OK] Second trial read: {trial_row_count_2} rows")
         assert trial_row_count_2 <= trial_row_limit, f"Second query returned {trial_row_count_2} rows, but limit is {trial_row_limit}"
-        print(f"✓ SUCCESS: Trial row limit persists across queries")
+        print(f"[OK] SUCCESS: Trial row limit persists across queries")
         
         print("\n" + "="*80)
         print("Trial Share Test Summary:")
@@ -603,7 +603,7 @@ def test_trial_share():
         
         os.unlink(trial_profile_path)
         
-        print("\n✓ Trial share E2E test completed successfully!")
+        print("\n[OK] Trial share E2E test completed successfully!")
         return True
         
     except Exception as e:
@@ -647,13 +647,13 @@ def test_phase2_filtering():
     bucket_name = get_bucket_name()
     try:
         s3_client.head_bucket(Bucket=bucket_name)
-        print(f"✓ Bucket {bucket_name} already exists")
+        print(f"[OK] Bucket {bucket_name} already exists")
     except:
         try:
             s3_client.create_bucket(Bucket=bucket_name)
-            print(f"✓ Created bucket: {bucket_name}")
+            print(f"[OK] Created bucket: {bucket_name}")
         except Exception as e:
-            print(f"⚠ Warning: Could not create bucket {bucket_name}: {e}")
+            print(f"[WARN] Warning: Could not create bucket {bucket_name}: {e}")
     
     print("\n[1] Registering users...")
     seller_email = f"seller_filter_{int(time.time())}@test.com"
@@ -666,7 +666,7 @@ def test_phase2_filtering():
         "role": "seller"
     }, expected_status=201)
     seller_id = seller_data["id"]
-    print(f"✓ Seller registered: {seller_email} (ID: {seller_id})")
+    print(f"[OK] Seller registered: {seller_email} (ID: {seller_id})")
     
     buyer_data = api_post(f"{MARKETPLACE_URL}/register", {
         "email": buyer_email,
@@ -674,7 +674,7 @@ def test_phase2_filtering():
         "role": "buyer"
     }, expected_status=201)
     buyer_id = buyer_data["id"]
-    print(f"✓ Buyer registered: {buyer_email} (ID: {buyer_id})")
+    print(f"[OK] Buyer registered: {buyer_email} (ID: {buyer_id})")
     
     print("\n[2] Logging in...")
     seller_login = api_post(f"{MARKETPLACE_URL}/login", {
@@ -690,7 +690,7 @@ def test_phase2_filtering():
     })
     buyer_token = buyer_login["access_token"]
     buyer_headers = {"Authorization": f"Bearer {buyer_token}"}
-    print("✓ Users logged in")
+    print("[OK] Users logged in")
     
     print("\n[3] Creating dataset with diverse test data...")
     dataset_data = api_post(f"{MARKETPLACE_URL}/datasets", {
@@ -702,7 +702,7 @@ def test_phase2_filtering():
         "anchor_columns": "category,write_batch"
     }, headers=seller_headers, expected_status=201)
     dataset_id = dataset_data["id"]
-    print(f"✓ Dataset created: {dataset_id}")
+    print(f"[OK] Dataset created: {dataset_id}")
     
     db = SessionLocal()
     try:
@@ -710,7 +710,7 @@ def test_phase2_filtering():
         if dataset:
             dataset.table_name = "filter_test_table"
             db.commit()
-            print(f"✓ Table name set: filter_test_table")
+            print(f"[OK] Table name set: filter_test_table")
     finally:
         db.close()
     
@@ -750,7 +750,7 @@ def test_phase2_filtering():
             
             table = pa.Table.from_pandas(test_data)
             write_deltalake(table_path, table, mode='overwrite', storage_options=storage_options)
-            print(f"✓ Wrote {len(test_data)} rows of test data")
+            print(f"[OK] Wrote {len(test_data)} rows of test data")
             print(f"  Countries: {test_data['country'].unique().tolist()}")
             print(f"  Amount range: {test_data['amount'].min()} - {test_data['amount'].max()}")
     finally:
@@ -761,11 +761,11 @@ def test_phase2_filtering():
     share_token = purchase_data["share_token"]
     share_id = purchase_data["share_id"]
     seller_server_url = purchase_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
-    print(f"✓ Purchase successful, share token: {share_token[:20]}...")
+    print(f"[OK] Purchase successful, share token: {share_token[:20]}...")
     
     if purchase_data.get("approval_status") == "pending":
         approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
-        print(f"✓ Share approved")
+        print(f"[OK] Share approved")
     
     print("\n[7] Testing filtered queries via direct HTTP calls...")
     share_name = f"share_{share_id}"
@@ -821,7 +821,7 @@ def test_phase2_filtering():
         for assertion_name, assertion_func in expected_assertions.items():
             try:
                 assertion_func(result_df)
-                print(f"    ✓ {assertion_name}")
+                print(f"    [OK] {assertion_name}")
             except AssertionError as e:
                 print(f"    ✗ {assertion_name}: {e}")
                 raise
@@ -909,12 +909,12 @@ def test_phase2_filtering():
     print("\n[7f] Test: Invalid column predicate rejection")
     response = requests.post(query_url, json={"predicateHints": ["nonexistent_column = 1"]}, headers=headers)
     assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text[:200]}"
-    print(f"    ✓ Query correctly rejected with status {response.status_code}")
+    print(f"    [OK] Query correctly rejected with status {response.status_code}")
     
     print("\n[7g] Test: Unsupported operator rejection")
     response = requests.post(query_url, json={"predicateHints": ["country LIKE 'E%'"]}, headers=headers)
     assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text[:200]}"
-    print(f"    ✓ Query correctly rejected with status {response.status_code}")
+    print(f"    [OK] Query correctly rejected with status {response.status_code}")
     
     print("\n[7h] Test: JSON predicateHints format")
     status, df = query_and_verify(
@@ -984,7 +984,7 @@ def test_phase2_filtering():
         for assertion_name, assertion_func in expected_assertions.items():
             try:
                 assertion_func(result_df)
-                print(f"    ✓ {assertion_name}")
+                print(f"    [OK] {assertion_name}")
             except AssertionError as e:
                 print(f"    ✗ {assertion_name}: {e}")
                 raise
@@ -1014,36 +1014,36 @@ def test_phase2_filtering():
     invalid_table_url = f"{seller_server_url}/shares/{share_name}/schemas/{schema_name}/tables/wrong_table_name/query"
     response = requests.post(invalid_table_url, json={}, headers=headers)
     assert response.status_code in [400, 404], f"Expected 400/404, got {response.status_code}"
-    print(f"    ✓ Invalid table name correctly rejected (status {response.status_code})")
+    print(f"    [OK] Invalid table name correctly rejected (status {response.status_code})")
     
     print("\n[10] Testing revoked share blocks filtered queries...")
     shares_list = api_get(f"{MARKETPLACE_URL}/my-shares", headers=seller_headers)
     test_share = next((s for s in shares_list if s["id"] == share_id), None)
     if test_share:
         api_delete(f"{MARKETPLACE_URL}/shares/{share_id}", headers=seller_headers)
-        print("✓ Share revoked")
+        print("[OK] Share revoked")
     
     response = requests.post(query_url, json={"predicateHints": ["country = 'EE'"]}, headers=headers)
     assert response.status_code in [401, 403], f"Expected 401/403, got {response.status_code}"
-    print(f"    ✓ Revoked share correctly blocked (status {response.status_code})")
+    print(f"    [OK] Revoked share correctly blocked (status {response.status_code})")
     
     print("\n" + "="*80)
     print("Phase 2 Filtering Test Summary:")
-    print("  ✓ Equality filter")
-    print("  ✓ Numeric comparison filter")
-    print("  ✓ Filter + limit ordering")
-    print("  ✓ Compound AND filter")
-    print("  ✓ Projection with filter")
-    print("  ✓ Invalid column rejection")
-    print("  ✓ Unsupported operator rejection")
-    print("  ✓ JSON predicateHints format")
-    print("  ✓ IN operator")
-    print("  ✓ Trial share filter limits")
-    print("  ✓ Revoked share blocking")
-    print("  ✓ Table name validation")
+    print("  [OK] Equality filter")
+    print("  [OK] Numeric comparison filter")
+    print("  [OK] Filter + limit ordering")
+    print("  [OK] Compound AND filter")
+    print("  [OK] Projection with filter")
+    print("  [OK] Invalid column rejection")
+    print("  [OK] Unsupported operator rejection")
+    print("  [OK] JSON predicateHints format")
+    print("  [OK] IN operator")
+    print("  [OK] Trial share filter limits")
+    print("  [OK] Revoked share blocking")
+    print("  [OK] Table name validation")
     print("="*80)
     
-    print("\n✓ Phase 2 filtering E2E test completed successfully!")
+    print("\n[OK] Phase 2 filtering E2E test completed successfully!")
     return True
 
 if __name__ == "__main__":

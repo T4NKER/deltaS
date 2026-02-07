@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import os
 from src.models.database import Share, Dataset
 from src.utils.s3_utils import get_full_s3_path
+from src.utils.token_utils import verify_token_hash, is_token_expired
 
 SELLER_ID = os.getenv("SELLER_ID", None)
 if SELLER_ID and SELLER_ID.strip():
@@ -86,9 +87,21 @@ def cleanup_old_watermarked_files(s3_client, bucket: str, prefix: str, max_age_h
         pass
 
 def get_share_from_token(token: str, db: Session) -> Share:
-    share = db.query(Share).filter(Share.token == token).first()
-    if not share:
+    shares = db.query(Share).filter(Share.revoked == False).all()
+    
+    matching_share = None
+    for share in shares:
+        if share.token and share.token == token:
+            matching_share = share
+            break
+        elif share.token_hash and verify_token_hash(token, share.token_hash):
+            matching_share = share
+            break
+    
+    if not matching_share:
         raise HTTPException(status_code=401, detail="Invalid share token")
+    
+    share = matching_share
     
     if SELLER_ID is not None and share.seller_id != SELLER_ID:
         raise HTTPException(status_code=403, detail="This server only serves shares for its configured seller")
@@ -96,10 +109,10 @@ def get_share_from_token(token: str, db: Session) -> Share:
     if share.revoked:
         raise HTTPException(status_code=401, detail="Share has been revoked")
     
-    if share.expires_at and share.expires_at < datetime.utcnow():
+    if is_token_expired(share.expires_at):
         raise HTTPException(status_code=401, detail="Share token expired")
     
-    if share.is_trial and share.trial_expires_at and share.trial_expires_at < datetime.utcnow():
+    if share.is_trial and is_token_expired(share.trial_expires_at):
         raise HTTPException(status_code=401, detail="Trial access expired")
     
     if share.approval_status != "approved":
