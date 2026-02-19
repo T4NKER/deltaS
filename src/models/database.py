@@ -67,6 +67,7 @@ class Share(Base):
     trial_row_limit = Column(Integer)
     trial_expires_at = Column(DateTime)
     token_rotated_at = Column(DateTime)
+    last_used_at = Column(DateTime)
     profile_json = Column(Text)
     profile_generated_at = Column(DateTime)
     

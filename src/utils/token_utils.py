@@ -19,11 +19,28 @@ def verify_token_hash(token: str, stored_hash: str) -> bool:
     computed_hash = hash_token(token)
     return hmac.compare_digest(computed_hash, stored_hash)
 
-def should_rotate_token(created_at: datetime, rotation_days: int = 90) -> bool:
+def should_rotate_token(created_at: datetime, last_used_at: Optional[datetime] = None, rotation_days: int = 90, inactivity_days: int = 30) -> bool:
+    from src.utils.settings import get_settings
+    settings = get_settings()
+    
+    rotation_days = settings.TOKEN_ROTATION_DAYS if hasattr(settings, 'TOKEN_ROTATION_DAYS') else rotation_days
+    inactivity_days = settings.TOKEN_INACTIVITY_DAYS if hasattr(settings, 'TOKEN_INACTIVITY_DAYS') else inactivity_days
+    
     if not rotation_days or rotation_days <= 0:
         return False
-    age = datetime.utcnow() - created_at
-    return age.days >= rotation_days
+    
+    now = datetime.utcnow()
+    age = now - created_at
+    
+    if age.days >= rotation_days:
+        return True
+    
+    if last_used_at and inactivity_days > 0:
+        inactivity = now - last_used_at
+        if inactivity.days >= inactivity_days:
+            return True
+    
+    return False
 
 def is_token_expired(expires_at: Optional[datetime]) -> bool:
     if not expires_at:

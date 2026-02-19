@@ -24,6 +24,8 @@ class Settings:
     
     TOKEN_ROTATION_ENABLED: bool = os.getenv("TOKEN_ROTATION_ENABLED", "false").lower() == "true"
     TOKEN_EXPIRY_DAYS: int = int(os.getenv("TOKEN_EXPIRY_DAYS", "365"))
+    TOKEN_ROTATION_DAYS: int = int(os.getenv("TOKEN_ROTATION_DAYS", "90"))
+    TOKEN_INACTIVITY_DAYS: int = int(os.getenv("TOKEN_INACTIVITY_DAYS", "30"))
     
     @classmethod
     def get_watermark_secret_bytes(cls) -> bytes:

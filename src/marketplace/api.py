@@ -18,16 +18,15 @@ from src.marketplace.auth import (
 )
 from src.marketplace.schemas import (
     UserRegister, UserLogin, Token, UserResponse,
-    DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse, ProfileResponse, FileDownloadRequest,
+    DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse, ProfileResponse,
     DeltaSharingServerUrlRequest, ShareResponse, TokenRotationResponse, ApprovalResponse, RejectionResponse,
-    ProfileListItem, UsageLogResponse, FileDownloadResponse, FileDownloadRevokeResponse
+    ProfileListItem, UsageLogResponse, FileDownloadRequest, FileDownloadResponse, FileDownloadRevokeResponse
 )
 from src.seller.publish import validate_metadata_signature
 from src.marketplace.schemas import DatasetMetadataBundle
 from src.utils.token_utils import generate_share_token, hash_token, should_rotate_token, is_token_expired
 from src.utils.settings import get_settings
 from src.seller.profile_generator import generate_delta_sharing_profile, generate_profile_json
-from src.marketplace.file_delivery import generate_file_download_link, revoke_file_download_link, get_file_delivery_metrics
 
 app = FastAPI(title="Delta Sharing Marketplace API")
 
@@ -392,6 +391,14 @@ async def rotate_share_token(
             detail="Cannot rotate token for revoked share"
         )
     
+    settings = get_settings()
+    rotation_recommended = should_rotate_token(
+        share.created_at,
+        share.last_used_at,
+        settings.TOKEN_ROTATION_DAYS,
+        settings.TOKEN_INACTIVITY_DAYS
+    )
+    
     new_token = generate_share_token()
     new_token_hash = hash_token(new_token)
     
@@ -414,7 +421,8 @@ async def rotate_share_token(
         status="success",
         message="Token rotated successfully",
         share_id=share_id,
-        new_token=new_token
+        new_token=new_token,
+        rotation_recommended=rotation_recommended
     )
 
 @app.delete("/shares/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -671,20 +679,32 @@ async def request_file_download(
             detail="Share has been revoked"
         )
     
-    dataset = db.query(Dataset).filter(Dataset.id == share.dataset_id).first()
-    if not dataset:
+    seller = db.query(User).filter(User.id == share.seller_id).first()
+    if not seller or not seller.delta_sharing_server_url:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Dataset not found"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Seller server URL not configured"
         )
     
     try:
-        download_info = generate_file_download_link(dataset, share, db, request.expiry_hours)
-        return FileDownloadResponse(**download_info)
-    except Exception as e:
+        seller_token = create_access_token({"sub": str(seller.id)})
+        seller_headers = {"Authorization": f"Bearer {seller_token}"}
+        
+        seller_url = seller.delta_sharing_server_url.rstrip('/')
+        if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+            seller_url = seller_url.replace("localhost", "seller")
+        response = requests.post(
+            f"{seller_url}/seller/file-download/{share_id}",
+            json={"expiry_hours": request.expiry_hours},
+            headers=seller_headers,
+            timeout=30
+        )
+        response.raise_for_status()
+        return FileDownloadResponse(**response.json())
+    except requests.exceptions.RequestException as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate file download link: {str(e)}"
+            detail=f"Failed to request file download from seller: {str(e)}"
         )
 
 @app.delete("/shares/{share_id}/file-download/{snapshot_id}", response_model=FileDownloadRevokeResponse)
@@ -707,38 +727,34 @@ async def revoke_file_download(
             detail="You can only revoke file downloads for your own shares"
         )
     
-    success = revoke_file_download_link(snapshot_id, db)
-    
-    if success:
-        return FileDownloadRevokeResponse(
-            status="success",
-            message=f"File download link {snapshot_id} revoked"
-        )
-    else:
+    seller = db.query(User).filter(User.id == share.seller_id).first()
+    if not seller or not seller.delta_sharing_server_url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to revoke file download link"
-        )
-
-@app.get("/shares/{share_id}/file-delivery-metrics")
-async def get_file_delivery_metrics_endpoint(
-    share_id: int,
-    current_user: User = Depends(get_current_seller),
-    db: Session = Depends(get_db)
-):
-    share = db.query(Share).filter(Share.id == share_id).first()
-    if not share:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Share not found"
+            detail="Seller server URL not configured"
         )
     
-    if share.seller_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only view metrics for your own shares"
+    try:
+        seller_token = create_access_token({"sub": str(seller.id)})
+        seller_headers = {"Authorization": f"Bearer {seller_token}"}
+        
+        seller_url = seller.delta_sharing_server_url.rstrip('/')
+        if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+            seller_url = seller_url.replace("localhost", "seller")
+        response = requests.delete(
+            f"{seller_url}/seller/file-download/{snapshot_id}",
+            headers=seller_headers,
+            timeout=30
         )
-    
-    metrics = get_file_delivery_metrics(share_id, db)
-    return metrics
+        response.raise_for_status()
+        result = response.json()
+        return FileDownloadRevokeResponse(
+            status=result.get("status", "success"),
+            message=result.get("message", f"File download {snapshot_id} revoked")
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to revoke file download: {str(e)}"
+        )
 

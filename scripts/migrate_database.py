@@ -338,6 +338,17 @@ def migrate_database():
         except Exception as e:
             print(f"Token migration: {e}")
             conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
+            """))
+            print("Added last_used_at column to shares")
+        except Exception as e:
+            print(f"last_used_at column: {e}")
+            conn.rollback()
+        
         print("\nDatabase migration completed!")
         print("Note: If columns already exist, you may see errors above. This is normal.")
         print("Note: S3 credentials are now seller-side (environment variables), not in marketplace database.")

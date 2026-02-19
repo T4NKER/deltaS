@@ -109,9 +109,6 @@ class PublishMetadataRequest(BaseModel):
     description: Optional[str] = None
     anchor_columns: Optional[str] = None
 
-class FileDownloadRequest(BaseModel):
-    expiry_hours: int = 24
-
 class SyntheticDataRequest(BaseModel):
     table_path: str
     output_table_path: str
@@ -141,6 +138,7 @@ class TokenRotationResponse(BaseModel):
     message: str
     share_id: int
     new_token: str
+    rotation_recommended: Optional[bool] = None
 
 class ApprovalResponse(BaseModel):
     status: str
@@ -174,6 +172,9 @@ class UsageLogResponse(BaseModel):
     query_limit: Optional[int]
     ip_address: Optional[str]
 
+class FileDownloadRequest(BaseModel):
+    expiry_hours: int = 24
+
 class FileDownloadResponse(BaseModel):
     download_url: str
     download_token: str
@@ -186,3 +187,4 @@ class FileDownloadResponse(BaseModel):
 class FileDownloadRevokeResponse(BaseModel):
     status: str
     message: str
+

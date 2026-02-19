@@ -118,5 +118,8 @@ def get_share_from_token(token: str, db: Session) -> Share:
     if share.approval_status != "approved":
         raise HTTPException(status_code=403, detail=f"Share is {share.approval_status}, not approved")
     
+    share.last_used_at = datetime.utcnow()
+    db.commit()
+    
     return share
 

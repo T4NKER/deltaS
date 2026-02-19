@@ -24,7 +24,7 @@ from src.seller.publish import publish_dataset_metadata
 from src.seller.synthetic_data import generate_synthetic_data
 from src.utils.delta_sharing_utils import get_share_from_token
 from src.utils.settings import get_settings
-from src.marketplace.schemas import PublishMetadataRequest, SyntheticDataRequest
+from src.marketplace.schemas import PublishMetadataRequest, SyntheticDataRequest, FileDownloadRequest, FileDownloadResponse
 from src.utils.s3_utils import (
     get_s3_client, get_delta_storage_options,
     fix_endpoint_url_for_client, get_full_s3_path, get_bucket_name
@@ -639,7 +639,143 @@ async def generate_synthetic_dataset(
             detail=f"Failed to generate synthetic data: {str(e)}"
         )
 
+@app.post("/seller/file-download/{share_id}")
+async def generate_file_download(
+    share_id: int,
+    request: FileDownloadRequest,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        from jose import jwt
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can generate file downloads")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    from src.models.database import Share, Dataset
+    
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    
+    if share.seller_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only generate downloads for your own shares")
+    
+    if share.approval_status != "approved":
+        raise HTTPException(status_code=400, detail=f"Share must be approved. Current status: {share.approval_status}")
+    
+    if share.revoked:
+        raise HTTPException(status_code=400, detail="Share has been revoked")
+    
+    dataset = db.query(Dataset).filter(Dataset.id == share.dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    try:
+        s3_client = get_s3_client()
+        bucket_name = get_bucket_name()
+        storage_options = get_delta_storage_options()
+        
+        original_table_path = get_full_s3_path(bucket_name, dataset.table_path)
+        
+        delta_table = DeltaTable(original_table_path, storage_options=storage_options)
+        df = delta_table.to_pandas()
+        
+        snapshot_id = f"snapshot_{share_id}_{int(datetime.utcnow().timestamp())}"
+        snapshot_key = f"snapshots/{snapshot_id}.parquet"
+        snapshot_path = get_full_s3_path(bucket_name, snapshot_key)
+        
+        table = pa.Table.from_pandas(df)
+        
+        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp_file:
+            pq.write_table(table, tmp_file.name)
+            tmp_file_path = tmp_file.name
+            file_size = os.path.getsize(tmp_file_path)
+        
+        try:
+            s3_client.upload_file(tmp_file_path, bucket_name, snapshot_key)
+        finally:
+            if os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
+        
+        expires_at = datetime.utcnow() + timedelta(hours=request.expiry_hours)
+        
+        endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:4566')
+        endpoint_for_client = fix_endpoint_url_for_client(endpoint_url).rstrip('/')
+        is_localstack = 'localhost:4566' in endpoint_for_client or 'localstack:4566' in endpoint_for_client or '127.0.0.1:4566' in endpoint_for_client
+        
+        presigned_url = get_presigned_url(s3_client, bucket_name, snapshot_key, endpoint_for_client, is_localstack)
+        
+        import hashlib
+        download_token = hashlib.sha256(f"{share_id}:{snapshot_id}:{expires_at.isoformat()}".encode()).hexdigest()[:32]
+        
+        audit_log = AuditLog(
+            buyer_id=share.buyer_id,
+            dataset_id=dataset.id,
+            share_id=share.id,
+            row_count_returned=len(df),
+            bytes_served=file_size,
+            client_metadata=json.dumps({"delivery_method": "file_link", "download_token": download_token, "snapshot_id": snapshot_id, "expiry_hours": request.expiry_hours})
+        )
+        db.add(audit_log)
+        db.commit()
+        
+        return FileDownloadResponse(
+            download_url=presigned_url,
+            download_token=download_token,
+            expires_at=expires_at.isoformat(),
+            snapshot_id=snapshot_id,
+            file_size_bytes=file_size,
+            rows=len(df),
+            columns=list(df.columns)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate file download: {str(e)}"
+        )
+
+@app.delete("/seller/file-download/{snapshot_id}")
+async def revoke_file_download(
+    snapshot_id: str,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        from jose import jwt
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can revoke file downloads")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    try:
+        s3_client = get_s3_client()
+        bucket_name = get_bucket_name()
+        snapshot_key = f"snapshots/{snapshot_id}.parquet"
+        
+        s3_client.delete_object(Bucket=bucket_name, Key=snapshot_key)
+        
+        return {"status": "success", "message": f"File download {snapshot_id} revoked"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to revoke file download: {str(e)}"
+        )
+
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    return {"status": "healthy (=P)"}
 
