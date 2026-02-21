@@ -57,6 +57,7 @@ services:
       DATABASE_URL: postgresql://deltasharing:deltasharing123@postgres:5432/marketplace
       PYTHONPATH: /app
       DOCKER_ENV: "true"
+      ALLOW_INSECURE_DEFAULTS: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +78,7 @@ services:
       DATABASE_URL: postgresql://deltasharing:deltasharing123@postgres:5432/marketplace
       PYTHONPATH: /app
       DOCKER_ENV: "true"
+      ALLOW_INSECURE_DEFAULTS: "true"
       SELLER_SERVER_URL: ${SELLER_SERVER_URL:-http://seller:8080}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://localstack:4566}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-test}

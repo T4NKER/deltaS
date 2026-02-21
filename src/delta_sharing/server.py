@@ -1,24 +1,23 @@
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Tuple
+from typing import Optional
 import json
 import io
 import os
 import time
 import traceback
 from datetime import datetime, timedelta
-from deltalake import DeltaTable
-from urllib.parse import urlparse
+from deltalake import DeltaTable, write_deltalake
 import pyarrow as pa
-import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import pandas as pd
 import tempfile
 import uuid
-from deltalake import write_deltalake
+import hashlib
 
-from src.models.database import get_db, AuditLog, User
+from jose import jwt
+from src.models.database import get_db, AuditLog, User, Share, Dataset
 from src.seller.watermarking import generate_watermark, apply_watermark_to_dataframe
 from src.seller.publish import publish_dataset_metadata
 from src.seller.synthetic_data import generate_synthetic_data
@@ -233,7 +232,6 @@ async def query_table(
                 delta_table = DeltaTable(full_synthetic_path, storage_options=storage_options)
                 table_path = full_synthetic_path
             except Exception:
-                from src.seller.synthetic_data import generate_synthetic_data
                 synthetic_df, _ = generate_synthetic_data(
                     original_table_path=dataset.table_path,
                     output_table_path=synthetic_path,
@@ -255,7 +253,21 @@ async def query_table(
             delta_table = DeltaTable(table_path, storage_options=storage_options)
         
         arrow_dataset = delta_table.to_pyarrow_dataset()
-        original_schema = arrow_dataset.schema
+        
+        try:
+            arrow_table = delta_table.to_pyarrow_table()
+            original_schema = arrow_table.schema
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to get PyArrow schema: {str(e)}")
+        
+        if not isinstance(original_schema, pa.Schema):
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Expected PyArrow Schema, got type: {type(original_schema)}. "
+                       f"Schema type name: {type(original_schema).__name__}, "
+                       f"Module: {type(original_schema).__module__}. "
+                       f"This indicates the server needs to be restarted with the updated code."
+            )
         
         schema_col_names = [field.name for field in original_schema]
         
@@ -578,7 +590,13 @@ async def query_table(
         raise
     except Exception as e:
         error_detail = str(e) if str(e) else repr(e)
-        raise HTTPException(status_code=500, detail=f"Error querying Delta table: {error_detail}")
+        error_type = type(e).__name__
+        error_module = type(e).__module__
+        tb = traceback.format_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error querying Delta table: {error_detail} (Type: {error_type}, Module: {error_module})\n\nTraceback:\n{tb}"
+        )
 
 @app.post("/shares/prepare")
 async def prepare_share(
@@ -596,7 +614,6 @@ async def publish_metadata(
     token = extract_token_from_header(authorization)
     
     try:
-        from jose import jwt
         settings = get_settings()
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = int(payload.get("sub"))
@@ -634,7 +651,6 @@ async def generate_synthetic_dataset(
     token = extract_token_from_header(authorization)
     
     try:
-        from jose import jwt
         settings = get_settings()
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = int(payload.get("sub"))
@@ -676,7 +692,6 @@ async def generate_file_download(
     token = extract_token_from_header(authorization)
     
     try:
-        from jose import jwt
         settings = get_settings()
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = int(payload.get("sub"))
@@ -685,8 +700,6 @@ async def generate_file_download(
             raise HTTPException(status_code=403, detail="Only sellers can generate file downloads")
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
-    
-    from src.models.database import Share, Dataset
     
     share = db.query(Share).filter(Share.id == share_id).first()
     if not share:
@@ -740,7 +753,6 @@ async def generate_file_download(
         
         presigned_url = get_presigned_url(s3_client, bucket_name, snapshot_key, endpoint_for_client, is_localstack)
         
-        import hashlib
         download_token = hashlib.sha256(f"{share_id}:{snapshot_id}:{expires_at.isoformat()}".encode()).hexdigest()[:32]
         
         audit_log = AuditLog(
@@ -778,7 +790,6 @@ async def encrypt_share_token(
     token = extract_token_from_header(authorization)
     
     try:
-        from jose import jwt
         settings = get_settings()
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = int(payload.get("sub"))
@@ -795,20 +806,23 @@ async def encrypt_share_token(
     if not share_id or not buyer_public_key:
         raise HTTPException(status_code=400, detail="share_id and buyer_public_key are required")
     
-    from src.models.database import Share
     share = db.query(Share).filter(Share.id == share_id).first()
     if not share:
-        raise HTTPException(status_code=404, detail="Share not found")
+        raise HTTPException(status_code=404, detail=f"Share not found: share_id={share_id}")
     
     if share.seller_id != user.id:
-        raise HTTPException(status_code=403, detail="You can only encrypt tokens for your own shares")
+        raise HTTPException(status_code=403, detail=f"You can only encrypt tokens for your own shares. share.seller_id={share.seller_id}, user.id={user.id}")
     
-    if buyer_id and share.buyer_id != buyer_id:
-        raise HTTPException(status_code=403, detail="Buyer ID mismatch - potential impersonation attempt")
+    if buyer_id and share.buyer_id and share.buyer_id != buyer_id:
+        raise HTTPException(status_code=403, detail=f"Buyer ID mismatch - potential impersonation attempt. share.buyer_id={share.buyer_id}, provided buyer_id={buyer_id}")
     
-    share_token = generate_share_token()
-    token_hash = hash_token(share_token)
-    encrypted_token = encrypt_token(share_token, buyer_public_key)
+    try:
+        share_token = generate_share_token()
+        token_hash = hash_token(share_token)
+        encrypted_token = encrypt_token(share_token, buyer_public_key)
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to encrypt token: {str(e)}\n{error_trace}")
     
     return {
         "encrypted_token": encrypted_token,
@@ -824,7 +838,6 @@ async def revoke_file_download(
     token = extract_token_from_header(authorization)
     
     try:
-        from jose import jwt
         settings = get_settings()
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         user_id = int(payload.get("sub"))

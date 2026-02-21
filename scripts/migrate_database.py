@@ -383,6 +383,17 @@ def migrate_database():
             print(f"token nullable: {e}")
             conn.rollback()
         
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ALTER COLUMN token_hash DROP NOT NULL;
+            """))
+            print("Made token_hash column nullable")
+            conn.commit()
+        except Exception as e:
+            print(f"token_hash nullable: {e}")
+            conn.rollback()
+        
         print("\nDatabase migration completed!")
         print("Note: If columns already exist, you may see errors above. This is normal.")
         print("Note: S3 credentials are now seller-side (environment variables), not in marketplace database.")

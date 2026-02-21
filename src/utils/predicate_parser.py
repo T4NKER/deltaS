@@ -206,7 +206,37 @@ def predicates_to_pyarrow_filter(predicates: List[PredicateNode], schema: pa.Sch
     
     return result
 
-def parse_query_predicates(body: Dict[str, Any], schema: pa.Schema) -> Tuple[Optional[ds.Expression], List[PredicateNode]]:
+def parse_query_predicates(body: Dict[str, Any], schema: Any) -> Tuple[Optional[ds.Expression], List[PredicateNode]]:
+    if not isinstance(schema, pa.Schema):
+        try:
+            if hasattr(schema, 'to_arrow'):
+                converted = schema.to_arrow()
+            elif hasattr(schema, 'to_pyarrow'):
+                converted = schema.to_pyarrow()
+            elif hasattr(schema, 'schema'):
+                converted = schema.schema
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Cannot convert schema to PyArrow Schema. Got type: {type(schema)}. "
+                           f"Please pass a PyArrow Schema (pa.Schema) or an object with to_arrow()/to_pyarrow() method."
+                )
+            
+            if not isinstance(converted, pa.Schema):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Schema conversion returned non-PyArrow type: {type(converted)}"
+                )
+            
+            schema = converted
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to convert schema to PyArrow Schema: {str(e)}. Got type: {type(schema)}"
+            )
+    
     predicates = []
     
     if "jsonPredicateHints" in body:

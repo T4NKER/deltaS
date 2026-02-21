@@ -2,7 +2,12 @@ import requests
 import pandas as pd
 import hashlib
 import numpy as np
+import base64
 from src.seller.watermarking import generate_watermark, compute_row_anchor
+from src.utils.encryption import generate_key_pair, decrypt_token as _decrypt_token
+
+def decrypt_token(encrypted_token: str, private_key_b64: str) -> str:
+    return _decrypt_token(encrypted_token, private_key_b64)
 
 def detect_timestamp_columns(df: pd.DataFrame) -> list:
     timestamp_cols = []
@@ -243,4 +248,22 @@ def api_get(url: str, headers: dict = None, expected_status: int = 200) -> dict:
 def api_delete(url: str, headers: dict = None, expected_status: int = 204) -> None:
     response = requests.delete(url, headers=headers)
     assert response.status_code == expected_status, f"DELETE {url} failed: {response.text}"
+
+def register_buyer_public_key(marketplace_url: str, buyer_headers: dict) -> dict:
+    key_pair = generate_key_pair()
+    public_key_pem = base64.b64decode(key_pair['public_key']).decode('utf-8')
+    
+    response = requests.put(
+        f"{marketplace_url}/me/public-key",
+        json={"public_key": public_key_pem},
+        headers=buyer_headers
+    )
+    assert response.status_code == 200, f"Failed to register public key: {response.text}"
+    
+    return {
+        'public_key': public_key_pem,
+        'private_key': base64.b64decode(key_pair['private_key']).decode('utf-8'),
+        'public_key_b64': key_pair['public_key'],
+        'private_key_b64': key_pair['private_key']
+    }
 

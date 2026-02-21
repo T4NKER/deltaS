@@ -4,16 +4,21 @@ import time
 import requests
 import json
 import tempfile
+import traceback
+import importlib.util
+import pyarrow as pa
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.database import SessionLocal, User, Dataset, Share
 from src.utils.s3_utils import get_s3_client, get_bucket_name, get_delta_storage_options, get_full_s3_path
-from tests.utils import api_post, api_get, extract_list_items
+from tests.utils import api_post, api_get, extract_list_items, register_buyer_public_key, decrypt_token
 from delta_sharing import SharingClient, load_as_pandas
 from delta_sharing.protocol import DeltaSharingProfile
 from deltalake import write_deltalake, DeltaTable
+from src.marketplace import api
+from src.seller.publish import publish_dataset_metadata
 import pandas as pd
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
@@ -25,7 +30,6 @@ def test_marketplace_has_no_s3_credentials():
     print("="*80)
     
     print("\n[1] Checking if marketplace code imports S3 utilities...")
-    import importlib.util
     marketplace_api_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src', 'marketplace', 'api.py')
     
     if os.path.exists(marketplace_api_path):
@@ -54,7 +58,6 @@ def test_marketplace_has_no_s3_credentials():
     
     print("\n[2] Verifying marketplace code structure...")
     try:
-        from src.marketplace import api
         api_source = api.__file__ if hasattr(api, '__file__') else None
         
         if api_source and os.path.exists(api_source):
@@ -149,7 +152,6 @@ def test_full_blind_workflow():
         'value': [10.5, 20.3, 30.1]
     })
     
-    import pyarrow as pa
     table = pa.Table.from_pandas(test_data)
     storage_options = get_delta_storage_options()
     write_deltalake(full_path, table, storage_options=storage_options, mode='overwrite')
@@ -196,7 +198,6 @@ def test_full_blind_workflow():
         db.close()
     
     print("\n[3] Seller generating metadata bundle (seller-side only)...")
-    from src.seller.publish import publish_dataset_metadata
     
     metadata = publish_dataset_metadata(
         table_path=table_path,
@@ -222,13 +223,19 @@ def test_full_blind_workflow():
     print(f"  Risk level: {dataset_data.get('risk_level', 'N/A')}")
     print(f"  Anchor columns: {dataset_data.get('anchor_columns', 'N/A')}")
     
-    print("\n[5] Buyer purchasing dataset...")
+    print("\n[5] Registering buyer public key...")
+    buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
+    print("[OK] Buyer public key registered")
+    
+    print("\n[6] Buyer purchasing dataset...")
     purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
     share_id = purchase_data["share_id"]
-    share_token = purchase_data["share_token"]
+    encrypted_token = purchase_data.get("encrypted_token")
     print(f"[OK] Purchase created (share_id: {share_id})")
+    if encrypted_token:
+        print(f"  Encrypted token received: {encrypted_token[:30]}...")
     
-    print("\n[6] Seller approving share (generates profile)...")
+    print("\n[7] Seller approving share (generates profile)...")
     approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
     assert approve_resp["approval_status"] == "approved"
     profile_generated = approve_resp.get("profile_generated", False)
@@ -238,7 +245,7 @@ def test_full_blind_workflow():
     else:
         print("[OK] Share approved and profile generated")
     
-    print("\n[7] Buyer retrieving profile from marketplace (will generate if needed)...")
+    print("\n[8] Buyer retrieving profile from marketplace (will generate if needed)...")
     try:
         profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{share_id}/profile", headers=buyer_headers)
     except Exception as e:
@@ -251,7 +258,7 @@ def test_full_blind_workflow():
             print(f"  Share exists: {share is not None}")
             if share:
                 print(f"  Share buyer_id: {share.buyer_id}, approval_status: {share.approval_status}")
-                print(f"  Share has token: {share.token is not None}")
+                print(f"  Share has encrypted_token: {share.encrypted_token is not None}")
             print(f"  Seller delta_sharing_server_url: {seller_user.delta_sharing_server_url if seller_user else 'N/A'}")
         finally:
             db.close()
@@ -260,7 +267,14 @@ def test_full_blind_workflow():
     profile_data = json.loads(profile_json_str)
     
     assert profile_data["endpoint"] == DELTA_SHARING_SERVER_URL
-    assert profile_data["bearerToken"] == share_token
+    assert "encryptedBearerToken" in profile_data or "bearerToken" in profile_data
+    if "encryptedBearerToken" in profile_data:
+        print("[OK] Profile retrieved with encryptedBearerToken")
+        decrypted_token = decrypt_token(profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+        profile_data["bearerToken"] = decrypted_token
+        del profile_data["encryptedBearerToken"]
+    else:
+        print("[OK] Profile retrieved with bearerToken")
     print("[OK] Profile retrieved from marketplace")
     
     print("\n[8] Buyer reading data directly from seller (bypassing marketplace)...")
@@ -314,7 +328,6 @@ if __name__ == "__main__":
         results.append(("No S3 Credentials", result))
     except Exception as e:
         print(f"\n[FAIL] Test failed with error: {e}")
-        import traceback
         traceback.print_exc()
         results.append(("No S3 Credentials", False))
     
@@ -323,7 +336,6 @@ if __name__ == "__main__":
         results.append(("Cannot Read Delta Tables", result))
     except Exception as e:
         print(f"\n[FAIL] Test failed with error: {e}")
-        import traceback
         traceback.print_exc()
         results.append(("Cannot Read Delta Tables", False))
     
@@ -332,7 +344,6 @@ if __name__ == "__main__":
         results.append(("Full Blind Workflow", result))
     except Exception as e:
         print(f"\n[FAIL] Test failed with error: {e}")
-        import traceback
         traceback.print_exc()
         results.append(("Full Blind Workflow", False))
     

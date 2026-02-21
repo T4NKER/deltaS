@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.models.database import SessionLocal, Dataset, User
 from src.seller.data_writer import write_data_continuously
 from src.utils.s3_utils import get_s3_client, get_bucket_name, get_delta_storage_options, get_full_s3_path
-from tests.utils import check_watermark, extract_list_items, api_post, api_get, api_delete
+from tests.utils import check_watermark, extract_list_items, api_post, api_get, api_delete, register_buyer_public_key, decrypt_token
+from delta_sharing.protocol import DeltaSharingProfile
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
 DELTA_SHARING_SERVER_URL = os.getenv("DELTA_SHARING_SERVER_URL", "http://localhost:8080")
@@ -150,22 +151,28 @@ def test_e2e_delta_sharing():
     finally:
         db.close()
     
-    print("\n[5a] Buyer purchasing dataset...")
+    print("\n[5a] Registering buyer public key...")
+    buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
+    print("[OK] Buyer public key registered")
+    
+    print("\n[5b] Buyer purchasing dataset...")
     purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
-    share_token = purchase_data["share_token"]
+    encrypted_token = purchase_data.get("encrypted_token")
     approval_status = purchase_data["approval_status"]
     share_id = purchase_data["share_id"]
     seller_server_url = purchase_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
-    print(f"[OK] Purchase successful, share token: {share_token[:20]}...")
+    print(f"[OK] Purchase successful")
+    if encrypted_token:
+        print(f"  Encrypted token received: {encrypted_token[:30]}...")
     print(f"  Approval status: {approval_status}")
     print(f"  Seller server URL: {seller_server_url}")
     
     if approval_status == "pending":
-        print("\n[5a] Share requires approval - seller approving...")
+        print("\n[5c] Share requires approval - seller approving...")
         approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
         print(f"[OK] Share approved: {approve_resp['approval_status']}")
     
-    print("\n[5b] Testing approval workflow with dataset requiring approval...")
+    print("\n[5d] Testing approval workflow with dataset requiring approval...")
     purchase_approval_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_approval_id}", {}, headers=buyer_headers)
     share_approval_id = purchase_approval_data["share_id"]
     assert purchase_approval_data["approval_status"] == "pending", "Share should be pending approval"
@@ -181,13 +188,15 @@ def test_e2e_delta_sharing():
     assert approve_resp2["approval_status"] == "approved", "Share should be approved"
     print(f"[OK] Share approved after rejection")
     
-    print("\n[6] Creating Delta Sharing profile...")
-    profile_data = {
-        "shareCredentialsVersion": 1,
-        "endpoint": seller_server_url,
-        "bearerToken": share_token,
-        "expirationTime": None
-    }
+    print("\n[6] Getting Delta Sharing profile from marketplace...")
+    profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{share_id}/profile", headers=buyer_headers)
+    profile_json_str = profile_resp["profile_json"]
+    profile_data = json.loads(profile_json_str)
+    
+    if "encryptedBearerToken" in profile_data:
+        decrypted_token = decrypt_token(profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+        profile_data["bearerToken"] = decrypted_token
+        del profile_data["encryptedBearerToken"]
     
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(profile_data, f)
@@ -478,28 +487,35 @@ def test_trial_share():
     print("  Waiting 15 seconds for data to be written...")
     time.sleep(15)
     
-    print("\n[6] Buyer requesting trial access...")
+    print("\n[6] Registering buyer public key for trial...")
+    buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
+    print("[OK] Buyer public key registered")
+    
+    print("\n[7] Buyer requesting trial access...")
     trial_data = api_post(f"{MARKETPLACE_URL}/datasets/{dataset_id}/trial", {
         "row_limit": 50,
         "days_valid": 7
     }, headers=buyer_headers)
-    trial_share_token = trial_data["share_token"]
+    encrypted_token = trial_data.get("encrypted_token")
     trial_share_id = trial_data["share_id"]
     seller_server_url = trial_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
     trial_row_limit = trial_data["trial_row_limit"]
     print(f"[OK] Trial access granted")
-    print(f"  Share token: {trial_share_token[:20]}...")
+    if encrypted_token:
+        print(f"  Encrypted token received: {encrypted_token[:30]}...")
     print(f"  Row limit: {trial_row_limit}")
     print(f"  Expires at: {trial_data['trial_expires_at']}")
     print(f"  Seller server URL: {seller_server_url}")
     
-    print("\n[7] Creating Delta Sharing profile for trial...")
-    profile_data = {
-        "shareCredentialsVersion": 1,
-        "endpoint": seller_server_url,
-        "bearerToken": trial_share_token,
-        "expirationTime": None
-    }
+    print("\n[8] Getting Delta Sharing profile for trial from marketplace...")
+    profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{trial_share_id}/profile", headers=buyer_headers)
+    profile_json_str = profile_resp["profile_json"]
+    profile_data = json.loads(profile_json_str)
+    
+    if "encryptedBearerToken" in profile_data:
+        decrypted_token = decrypt_token(profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+        profile_data["bearerToken"] = decrypted_token
+        del profile_data["encryptedBearerToken"]
     
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(profile_data, f)
@@ -756,18 +772,43 @@ def test_phase2_filtering():
     finally:
         db.close()
     
-    print("\n[6] Buyer purchasing dataset...")
+    print("\n[6] Registering buyer public key...")
+    buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
+    print("[OK] Buyer public key registered")
+    
+    print("\n[7] Buyer purchasing dataset...")
     purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
-    share_token = purchase_data["share_token"]
+    encrypted_token = purchase_data.get("encrypted_token")
     share_id = purchase_data["share_id"]
     seller_server_url = purchase_data.get("seller_server_url", DELTA_SHARING_SERVER_URL)
-    print(f"[OK] Purchase successful, share token: {share_token[:20]}...")
+    print(f"[OK] Purchase successful")
+    if encrypted_token:
+        print(f"  Encrypted token received: {encrypted_token[:30]}...")
     
     if purchase_data.get("approval_status") == "pending":
         approve_resp = api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
         print(f"[OK] Share approved")
     
-    print("\n[7] Testing filtered queries via direct HTTP calls...")
+    print("\n[8] Getting profile for filtered queries...")
+    profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{share_id}/profile", headers=buyer_headers)
+    profile_json_str = profile_resp["profile_json"]
+    profile_data = json.loads(profile_json_str)
+    
+    share_token = None
+    if 'encryptedBearerToken' in profile_data:
+        share_token = decrypt_token(profile_data['encryptedBearerToken'], buyer_keys['private_key_b64'])
+        profile_data['bearerToken'] = share_token
+        del profile_data['encryptedBearerToken']
+    elif 'bearerToken' in profile_data:
+        share_token = profile_data['bearerToken']
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(profile_data, f)
+        profile_path = f.name
+    
+    profile = DeltaSharingProfile.read_from_file(profile_path)
+    
+    print("\n[9] Testing filtered queries via direct HTTP calls...")
     share_name = f"share_{share_id}"
     schema_name = "default"
     table_name = "filter_test_table"
@@ -936,14 +977,23 @@ def test_phase2_filtering():
     assert status == 200
     print(f"    Returned {len(df)} rows")
     
-    print("\n[8] Testing trial share with filters...")
+    print("\n[10] Testing trial share with filters...")
     trial_data = api_post(f"{MARKETPLACE_URL}/datasets/{dataset_id}/trial", {
         "row_limit": 10,
         "days_valid": 7
     }, headers=buyer_headers)
-    trial_share_token = trial_data["share_token"]
     trial_share_id = trial_data["share_id"]
     trial_row_limit = trial_data["trial_row_limit"]
+    
+    trial_profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{trial_share_id}/profile", headers=buyer_headers)
+    trial_profile_json_str = trial_profile_resp["profile_json"]
+    trial_profile_data = json.loads(trial_profile_json_str)
+    
+    trial_share_token = None
+    if "encryptedBearerToken" in trial_profile_data:
+        trial_share_token = decrypt_token(trial_profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+    elif "bearerToken" in trial_profile_data:
+        trial_share_token = trial_profile_data["bearerToken"]
     
     trial_query_url = f"{seller_server_url}/shares/share_{trial_share_id}/schemas/{schema_name}/tables/{table_name}/query"
     trial_headers = {"Authorization": f"Bearer {trial_share_token}"}

@@ -58,7 +58,7 @@ class Share(Base):
     buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     token = Column(String, unique=True, index=True, nullable=True)
     encrypted_token = Column(Text, nullable=True)
-    token_hash = Column(String, unique=True, index=True, nullable=False)
+    token_hash = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)
     approval_status = Column(String, default="pending")

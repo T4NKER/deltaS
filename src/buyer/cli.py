@@ -4,10 +4,18 @@ import argparse
 import json
 import tempfile
 import requests
+import traceback
 from pathlib import Path
 from typing import Optional
 from delta_sharing import SharingClient, load_as_pandas
 from delta_sharing.protocol import DeltaSharingProfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+try:
+    from tests.utils import check_watermark, extract_list_items
+except ImportError:
+    check_watermark = None
+    extract_list_items = None
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
 DELTA_SHARING_SERVER_URL = os.getenv("DELTA_SHARING_SERVER_URL", "http://localhost:8080")
@@ -80,8 +88,8 @@ def query_table(profile_path: str, share_name: str, schema_name: str, table_name
         }
 
 def verify_watermark(profile_path: str, share_name: str, schema_name: str, table_name: str, buyer_id: int, share_id: int, anchor_columns: Optional[list] = None):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from tests.utils import check_watermark, extract_list_items
+    if check_watermark is None or extract_list_items is None:
+        raise ImportError("tests.utils module not available")
     
     table_url = f"{profile_path}#{share_name}.{schema_name}.{table_name}"
     
@@ -242,7 +250,6 @@ def main():
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
 

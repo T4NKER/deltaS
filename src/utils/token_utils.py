@@ -22,7 +22,6 @@ def verify_token_hash(token: str, stored_hash: str) -> bool:
     return hmac.compare_digest(computed_hash, stored_hash)
 
 def should_rotate_token(created_at: datetime, last_used_at: Optional[datetime] = None, rotation_days: int = 90, inactivity_days: int = 30) -> bool:
-    from src.utils.settings import get_settings
     settings = get_settings()
     
     rotation_days = settings.TOKEN_ROTATION_DAYS if hasattr(settings, 'TOKEN_ROTATION_DAYS') else rotation_days

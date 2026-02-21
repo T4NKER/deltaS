@@ -3,8 +3,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
 from datetime import datetime, timedelta
-import secrets
-import hashlib
 import json
 import requests
 import os
@@ -21,11 +19,10 @@ from src.marketplace.schemas import (
     DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse, ProfileResponse,
     DeltaSharingServerUrlRequest, ShareResponse, TokenRotationResponse, ApprovalResponse, RejectionResponse,
     ProfileListItem, UsageLogResponse, FileDownloadRequest, FileDownloadResponse, FileDownloadRevokeResponse,
-    PublicKeyRegistrationRequest, PublicKeyRegistrationResponse
+    PublicKeyRegistrationRequest, PublicKeyRegistrationResponse, DatasetMetadataBundle
 )
 from src.seller.publish import validate_metadata_signature
-from src.marketplace.schemas import DatasetMetadataBundle
-from src.utils.token_utils import hash_token, should_rotate_token, is_token_expired
+from src.utils.token_utils import should_rotate_token
 from src.utils.settings import get_settings
 from src.utils.encryption import validate_public_key
 from src.seller.profile_generator import generate_delta_sharing_profile, generate_profile_json
@@ -114,7 +111,8 @@ async def register_public_key(
     
     return PublicKeyRegistrationResponse(
         status="success",
-        message="Public key registered successfully"
+        message="Public key registered successfully",
+        public_key=current_user.public_key
     )
 
 @app.get("/shares/{share_id}/buyer-public-key")
@@ -272,7 +270,6 @@ async def purchase_dataset(
         db.commit()
         db.refresh(share)
         
-        
         purchase = Purchase(
             buyer_id=current_user.id,
             dataset_id=dataset_id,
@@ -283,10 +280,58 @@ async def purchase_dataset(
         db.commit()
         db.refresh(purchase)
         
-        approval_status_value = getattr(share, 'approval_status', None) or approval_status
-        
         seller = db.query(User).filter(User.id == dataset.seller_id).first()
         seller_server_url = seller.delta_sharing_server_url if seller else None
+        
+        encrypted_token = None
+        if approval_status == "approved":
+            if not current_user.public_key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Buyer must register a public key before purchasing datasets. Use PUT /me/public-key."
+                )
+            
+            if seller and seller.delta_sharing_server_url:
+                try:
+                    seller_token = create_access_token({"sub": str(seller.id)})
+                    seller_headers = {"Authorization": f"Bearer {seller_token}"}
+                    
+                    seller_url = seller.delta_sharing_server_url.rstrip('/')
+                    if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+                        seller_url = seller_url.replace("localhost", "seller")
+                    elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
+                        seller_url = seller_url.replace("seller:", "localhost:")
+                        seller_url = seller_url.replace("seller/", "localhost/")
+                    
+                    encrypt_response = requests.post(
+                        f"{seller_url}/seller/encrypt-token",
+                        json={
+                            "share_id": share.id,
+                            "buyer_public_key": current_user.public_key,
+                            "buyer_id": current_user.id
+                        },
+                        headers=seller_headers,
+                        timeout=30
+                    )
+                    encrypt_response.raise_for_status()
+                    encrypt_data = encrypt_response.json()
+                    
+                    share.encrypted_token = encrypt_data["encrypted_token"]
+                    share.token_hash = encrypt_data["token_hash"]
+                    share.token = None
+                    
+                    try:
+                        profile = generate_delta_sharing_profile(share, seller, None)
+                        share.profile_json = generate_profile_json(profile)
+                        share.profile_generated_at = datetime.utcnow()
+                    except Exception as e:
+                        print(f"Warning: Failed to generate profile on purchase: {e}")
+                    
+                    db.commit()
+                    encrypted_token = share.encrypted_token
+                except requests.exceptions.RequestException as e:
+                    print(f"Warning: Failed to encrypt token via seller server: {e}")
+                    print("Share created but token encryption failed. Token will be encrypted on approval.")
         
         response_data = {
             "id": purchase.id,
@@ -295,8 +340,8 @@ async def purchase_dataset(
             "share_id": purchase.share_id,
             "amount": purchase.amount,
             "created_at": purchase.created_at,
-            "share_token": None,
-            "approval_status": approval_status_value,
+            "encrypted_token": encrypted_token,
+            "approval_status": share.approval_status,
             "seller_server_url": seller_server_url
         }
         
@@ -380,6 +425,9 @@ async def request_trial(
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
                 seller_url = seller_url.replace("localhost", "seller")
+            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
+                seller_url = seller_url.replace("seller:", "localhost:")
+                seller_url = seller_url.replace("seller/", "localhost/")
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -419,7 +467,7 @@ async def request_trial(
         buyer_id=share.buyer_id,
         dataset_id=share.dataset_id,
         share_id=share.id,
-        share_token=None,
+        encrypted_token=share.encrypted_token,
         approval_status=share.approval_status,
         seller_server_url=seller_server_url,
         is_trial=True,
@@ -450,7 +498,7 @@ async def get_my_shares(
             dataset_name=share.dataset.name,
             seller_id=share.seller_id,
             buyer_id=share.buyer_id,
-            token=share.token if share.token else "[REDACTED]",
+            encrypted_token=share.encrypted_token,
             created_at=share.created_at,
             expires_at=share.expires_at,
             approval_status=share.approval_status,
@@ -509,6 +557,9 @@ async def rotate_share_token(
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
                 seller_url = seller_url.replace("localhost", "seller")
+            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
+                seller_url = seller_url.replace("seller:", "localhost:")
+                seller_url = seller_url.replace("seller/", "localhost/")
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -574,7 +625,6 @@ async def revoke_share(
         db.commit()
     except Exception as e:
         db.rollback()
-        import traceback
         error_detail = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         print(f"ERROR in revoke_share: {error_detail}")
         raise HTTPException(
@@ -621,6 +671,9 @@ async def approve_share(
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
                 seller_url = seller_url.replace("localhost", "seller")
+            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
+                seller_url = seller_url.replace("seller:", "localhost:")
+                seller_url = seller_url.replace("seller/", "localhost/")
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",

@@ -69,7 +69,7 @@ class PurchaseResponse(BaseModel):
     share_id: int
     amount: float
     created_at: datetime
-    share_token: str
+    encrypted_token: Optional[str] = None
     approval_status: str
     seller_server_url: Optional[str] = None
     
@@ -85,7 +85,7 @@ class TrialResponse(BaseModel):
     buyer_id: int
     dataset_id: int
     share_id: int
-    share_token: str
+    encrypted_token: Optional[str] = None
     approval_status: str
     seller_server_url: Optional[str] = None
     is_trial: bool
@@ -133,7 +133,7 @@ class ShareResponse(BaseModel):
     dataset_name: str
     seller_id: int
     buyer_id: int
-    token: Optional[str] = None
+    encrypted_token: Optional[str] = None
     created_at: datetime
     expires_at: Optional[datetime]
     approval_status: str

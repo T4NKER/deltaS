@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import requests
@@ -370,8 +371,6 @@ def _generate_summary_metrics(experiments: Dict) -> Dict:
     }
 
 if __name__ == "__main__":
-    import sys
-    
     if len(sys.argv) < 6:
         print("Usage: python test_revocation_ttl_experiments.py <dataset_id> <buyer_email> <buyer_password> <seller_email> <seller_password> [num_iterations]")
         sys.exit(1)

@@ -30,9 +30,8 @@ def generate_key_pair():
     }
 
 def encrypt_token(token: str, public_key_pem: str) -> str:
-    public_key_bytes = base64.b64decode(public_key_pem.encode('utf-8'))
     public_key = serialization.load_pem_public_key(
-        public_key_bytes,
+        public_key_pem.encode('utf-8'),
         backend=default_backend()
     )
     
@@ -70,9 +69,8 @@ def decrypt_token(encrypted_token: str, private_key_pem: str) -> str:
 
 def validate_public_key(public_key_pem: str) -> bool:
     try:
-        public_key_bytes = base64.b64decode(public_key_pem.encode('utf-8'))
         serialization.load_pem_public_key(
-            public_key_bytes,
+            public_key_pem.encode('utf-8'),
             backend=default_backend()
         )
         return True
