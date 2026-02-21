@@ -19,17 +19,29 @@ def generate_delta_sharing_profile(
     if share.revoked:
         raise ValueError("Cannot generate profile for revoked share")
     
-    if not token:
-        if not share.token:
-            raise ValueError("Share must have a token to generate profile")
-        token = share.token
-    
-    profile = {
-        "shareCredentialsVersion": 1,
-        "endpoint": seller.delta_sharing_server_url,
-        "bearerToken": token,
-        "expirationTime": share.expires_at.isoformat() if share.expires_at else None
-    }
+    if share.encrypted_token:
+        profile = {
+            "shareCredentialsVersion": 1,
+            "endpoint": seller.delta_sharing_server_url,
+            "encryptedBearerToken": share.encrypted_token,
+            "expirationTime": share.expires_at.isoformat() if share.expires_at else None
+        }
+    elif token:
+        profile = {
+            "shareCredentialsVersion": 1,
+            "endpoint": seller.delta_sharing_server_url,
+            "bearerToken": token,
+            "expirationTime": share.expires_at.isoformat() if share.expires_at else None
+        }
+    elif share.token:
+        profile = {
+            "shareCredentialsVersion": 1,
+            "endpoint": seller.delta_sharing_server_url,
+            "bearerToken": share.token,
+            "expirationTime": share.expires_at.isoformat() if share.expires_at else None
+        }
+    else:
+        raise ValueError("Share must have either encrypted_token or token to generate profile")
     
     return profile
 

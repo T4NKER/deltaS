@@ -19,6 +19,7 @@ class User(Base):
     role = Column(String, default="buyer")
     created_at = Column(DateTime, default=datetime.utcnow)
     delta_sharing_server_url = Column(String)
+    public_key = Column(Text)
     
     datasets = relationship("Dataset", back_populates="seller")
     shares_as_seller = relationship("Share", foreign_keys="Share.seller_id", back_populates="seller")
@@ -55,7 +56,8 @@ class Share(Base):
     dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False)
     seller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     buyer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    token = Column(String, unique=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=True)
+    encrypted_token = Column(Text, nullable=True)
     token_hash = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime)

@@ -25,6 +25,8 @@ from src.seller.synthetic_data import generate_synthetic_data
 from src.utils.delta_sharing_utils import get_share_from_token
 from src.utils.settings import get_settings
 from src.marketplace.schemas import PublishMetadataRequest, SyntheticDataRequest, FileDownloadRequest, FileDownloadResponse
+from src.utils.encryption import encrypt_token
+from src.utils.token_utils import generate_share_token, hash_token
 from src.utils.s3_utils import (
     get_s3_client, get_delta_storage_options,
     fix_endpoint_url_for_client, get_full_s3_path, get_bucket_name
@@ -221,11 +223,36 @@ async def query_table(
         endpoint_for_client = fix_endpoint_url_for_client(endpoint_url).rstrip('/')
         is_localstack = 'localhost:4566' in endpoint_for_client or 'localstack:4566' in endpoint_for_client or '127.0.0.1:4566' in endpoint_for_client
 
-        watermarked_prefix = f"{table_prefix}/_watermarked_{share.id}_"
-        cleanup_old_watermarked_files(s3_client, bucket, watermarked_prefix)
-
         storage_options = get_delta_storage_options()
-        delta_table = DeltaTable(table_path, storage_options=storage_options)
+        
+        if share.is_trial:
+            synthetic_path = f"{table_prefix}/_synthetic_trial_{share.id}"
+            full_synthetic_path = get_full_s3_path(bucket_name, synthetic_path)
+            
+            try:
+                delta_table = DeltaTable(full_synthetic_path, storage_options=storage_options)
+                table_path = full_synthetic_path
+            except Exception:
+                from src.seller.synthetic_data import generate_synthetic_data
+                synthetic_df, _ = generate_synthetic_data(
+                    original_table_path=dataset.table_path,
+                    output_table_path=synthetic_path,
+                    num_rows=share.trial_row_limit or 100,
+                    dp_epsilon=0.1,
+                    preserve_statistics=True,
+                    seed=share.id
+                )
+                table_path = full_synthetic_path
+                try:
+                    delta_table = DeltaTable(table_path, storage_options=storage_options)
+                except Exception:
+                    synthetic_table = pa.Table.from_pandas(synthetic_df)
+                    write_deltalake(table_path, synthetic_table, storage_options=storage_options, mode='overwrite')
+                    delta_table = DeltaTable(table_path, storage_options=storage_options)
+        else:
+            watermarked_prefix = f"{table_prefix}/_watermarked_{share.id}_"
+            cleanup_old_watermarked_files(s3_client, bucket, watermarked_prefix)
+            delta_table = DeltaTable(table_path, storage_options=storage_options)
         
         arrow_dataset = delta_table.to_pyarrow_dataset()
         original_schema = arrow_dataset.schema
@@ -741,6 +768,52 @@ async def generate_file_download(
             status_code=500,
             detail=f"Failed to generate file download: {str(e)}"
         )
+
+@app.post("/seller/encrypt-token")
+async def encrypt_share_token(
+    request: dict,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        from jose import jwt
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can encrypt tokens")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    share_id = request.get("share_id")
+    buyer_public_key = request.get("buyer_public_key")
+    buyer_id = request.get("buyer_id")
+    
+    if not share_id or not buyer_public_key:
+        raise HTTPException(status_code=400, detail="share_id and buyer_public_key are required")
+    
+    from src.models.database import Share
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+    
+    if share.seller_id != user.id:
+        raise HTTPException(status_code=403, detail="You can only encrypt tokens for your own shares")
+    
+    if buyer_id and share.buyer_id != buyer_id:
+        raise HTTPException(status_code=403, detail="Buyer ID mismatch - potential impersonation attempt")
+    
+    share_token = generate_share_token()
+    token_hash = hash_token(share_token)
+    encrypted_token = encrypt_token(share_token, buyer_public_key)
+    
+    return {
+        "encrypted_token": encrypted_token,
+        "token_hash": token_hash
+    }
 
 @app.delete("/seller/file-download/{snapshot_id}")
 async def revoke_file_download(

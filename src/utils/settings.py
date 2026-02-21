@@ -22,6 +22,28 @@ class Settings:
     JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
     
+    ALLOW_INSECURE_DEFAULTS: bool = os.getenv("ALLOW_INSECURE_DEFAULTS", "false").lower() == "true"
+    
+    def __init__(self):
+        self._validate_secrets()
+    
+    def _validate_secrets(self):
+        insecure_defaults = []
+        if self.WATERMARK_SECRET == "default-watermark-secret-change-in-production":
+            insecure_defaults.append("WATERMARK_SECRET")
+        if self.TOKEN_SIGNING_SECRET == "default-token-secret-change-in-production":
+            insecure_defaults.append("TOKEN_SIGNING_SECRET")
+        if self.TOKEN_SALT == "default-token-salt-change-in-production":
+            insecure_defaults.append("TOKEN_SALT")
+        if self.JWT_SECRET_KEY == "default-jwt-secret-change-in-production":
+            insecure_defaults.append("JWT_SECRET_KEY")
+        
+        if insecure_defaults and not self.ALLOW_INSECURE_DEFAULTS:
+            raise ValueError(
+                f"Insecure default secrets detected: {', '.join(insecure_defaults)}. "
+                "Set these environment variables or set ALLOW_INSECURE_DEFAULTS=true for development only."
+            )
+    
     TOKEN_ROTATION_ENABLED: bool = os.getenv("TOKEN_ROTATION_ENABLED", "false").lower() == "true"
     TOKEN_EXPIRY_DAYS: int = int(os.getenv("TOKEN_EXPIRY_DAYS", "365"))
     TOKEN_ROTATION_DAYS: int = int(os.getenv("TOKEN_ROTATION_DAYS", "90"))

@@ -10,6 +10,8 @@ from src.utils.settings import get_settings
 def generate_buyer_fingerprint(buyer_id: int, share_id: int, redundancy: int = 3) -> Dict:
     settings = get_settings()
     secret = settings.get_watermark_secret_bytes()
+    if not secret or not isinstance(secret, bytes):
+        raise ValueError("Watermark secret must be bytes")
     
     base_message = f"{buyer_id}:{share_id}".encode('utf-8')
     base_hmac = hmac.new(secret, base_message, hashlib.sha256).hexdigest()

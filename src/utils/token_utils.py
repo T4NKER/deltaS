@@ -8,6 +8,8 @@ from src.utils.settings import get_settings
 def hash_token(token: str) -> str:
     settings = get_settings()
     salt = settings.get_token_salt_bytes()
+    if not salt or not isinstance(salt, bytes):
+        raise ValueError("Token salt must be bytes")
     return hmac.new(salt, token.encode('utf-8'), hashlib.sha256).hexdigest()
 
 def generate_share_token() -> str:

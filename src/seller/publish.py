@@ -14,6 +14,8 @@ from src.utils.settings import get_settings
 def generate_metadata_signature(metadata_dict: Dict[str, Any], seller_id: int) -> str:
     settings = get_settings()
     secret = settings.get_token_signing_secret_bytes()
+    if not secret or not isinstance(secret, bytes):
+        raise ValueError("Token signing secret must be bytes")
     
     metadata_json = json.dumps(metadata_dict, sort_keys=True, default=str)
     signature = hmac.new(secret, metadata_json.encode('utf-8'), hashlib.sha256).hexdigest()

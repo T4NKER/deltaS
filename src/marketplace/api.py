@@ -20,12 +20,14 @@ from src.marketplace.schemas import (
     UserRegister, UserLogin, Token, UserResponse,
     DatasetCreate, DatasetResponse, PurchaseResponse, TrialRequest, TrialResponse, ProfileResponse,
     DeltaSharingServerUrlRequest, ShareResponse, TokenRotationResponse, ApprovalResponse, RejectionResponse,
-    ProfileListItem, UsageLogResponse, FileDownloadRequest, FileDownloadResponse, FileDownloadRevokeResponse
+    ProfileListItem, UsageLogResponse, FileDownloadRequest, FileDownloadResponse, FileDownloadRevokeResponse,
+    PublicKeyRegistrationRequest, PublicKeyRegistrationResponse
 )
 from src.seller.publish import validate_metadata_signature
 from src.marketplace.schemas import DatasetMetadataBundle
-from src.utils.token_utils import generate_share_token, hash_token, should_rotate_token, is_token_expired
+from src.utils.token_utils import hash_token, should_rotate_token, is_token_expired
 from src.utils.settings import get_settings
+from src.utils.encryption import validate_public_key
 from src.seller.profile_generator import generate_delta_sharing_profile, generate_profile_json
 
 app = FastAPI(title="Delta Sharing Marketplace API")
@@ -95,9 +97,57 @@ async def update_delta_sharing_server_url(
     db.refresh(current_user)
     return {"delta_sharing_server_url": current_user.delta_sharing_server_url}
 
+@app.put("/me/public-key", response_model=PublicKeyRegistrationResponse)
+async def register_public_key(
+    request: PublicKeyRegistrationRequest,
+    current_user: User = Depends(get_current_buyer),
+    db: Session = Depends(get_db)
+):
+    if not validate_public_key(request.public_key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid public key format"
+        )
+    
+    current_user.public_key = request.public_key
+    db.commit()
+    
+    return PublicKeyRegistrationResponse(
+        status="success",
+        message="Public key registered successfully"
+    )
+
+@app.get("/shares/{share_id}/buyer-public-key")
+async def get_buyer_public_key(
+    share_id: int,
+    current_user: User = Depends(get_current_seller),
+    db: Session = Depends(get_db)
+):
+    share = db.query(Share).filter(Share.id == share_id).first()
+    if not share:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Share not found"
+        )
+    
+    if share.seller_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only access buyer public key for your own shares"
+        )
+    
+    buyer = db.query(User).filter(User.id == share.buyer_id).first()
+    if not buyer or not buyer.public_key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Buyer has not registered a public key"
+        )
+    
+    return {"public_key": buyer.public_key}
+
 @app.get("/datasets", response_model=list[DatasetResponse])
 async def list_datasets(
-    current_user: User = Depends(get_current_buyer),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     if current_user.role == "seller":
@@ -203,8 +253,6 @@ async def purchase_dataset(
                 detail="You already have access to this dataset"
             )
         
-        share_token = generate_share_token()
-        token_hash = hash_token(share_token)
         settings = get_settings()
         expires_at = datetime.utcnow() + timedelta(days=settings.TOKEN_EXPIRY_DAYS)
         
@@ -214,8 +262,9 @@ async def purchase_dataset(
             dataset_id=dataset_id,
             seller_id=dataset.seller_id,
             buyer_id=current_user.id,
-            token=share_token,
-            token_hash=token_hash,
+            token=None,
+            encrypted_token=None,
+            token_hash=None,
             expires_at=expires_at,
             approval_status=approval_status
         )
@@ -246,7 +295,7 @@ async def purchase_dataset(
             "share_id": purchase.share_id,
             "amount": purchase.amount,
             "created_at": purchase.created_at,
-            "share_token": share_token,
+            "share_token": None,
             "approval_status": approval_status_value,
             "seller_server_url": seller_server_url
         }
@@ -296,8 +345,12 @@ async def request_trial(
                 detail="You already have an active trial for this dataset"
             )
     
-    share_token = generate_share_token()
-    token_hash = hash_token(share_token)
+    if not current_user.public_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Buyer must register a public key before requesting a trial"
+        )
+    
     row_limit = min(trial_request.row_limit or 100, 1000)
     expires_at = datetime.utcnow() + timedelta(days=trial_request.days_valid or 7)
     
@@ -305,8 +358,9 @@ async def request_trial(
         dataset_id=dataset_id,
         seller_id=dataset.seller_id,
         buyer_id=current_user.id,
-        token=share_token,
-        token_hash=token_hash,
+        token=None,
+        encrypted_token=None,
+        token_hash=None,
         expires_at=expires_at,
         approval_status="approved",
         is_trial=True,
@@ -318,6 +372,46 @@ async def request_trial(
     db.refresh(share)
     
     seller = db.query(User).filter(User.id == dataset.seller_id).first()
+    if seller and seller.delta_sharing_server_url:
+        try:
+            seller_token = create_access_token({"sub": str(seller.id)})
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
+            
+            seller_url = seller.delta_sharing_server_url.rstrip('/')
+            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+                seller_url = seller_url.replace("localhost", "seller")
+            
+            encrypt_response = requests.post(
+                f"{seller_url}/seller/encrypt-token",
+                json={
+                    "share_id": share.id,
+                    "buyer_public_key": current_user.public_key,
+                    "buyer_id": current_user.id
+                },
+                headers=seller_headers,
+                timeout=30
+            )
+            encrypt_response.raise_for_status()
+            encrypt_data = encrypt_response.json()
+            
+            share.encrypted_token = encrypt_data["encrypted_token"]
+            share.token_hash = encrypt_data["token_hash"]
+            share.token = None
+            
+            profile = generate_delta_sharing_profile(share, seller, None)
+            share.profile_json = generate_profile_json(profile)
+            share.profile_generated_at = datetime.utcnow()
+            db.commit()
+        except requests.exceptions.RequestException as e:
+            db.delete(share)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to encrypt token via seller server: {str(e)}"
+            )
+        except Exception as e:
+            print(f"Warning: Failed to generate profile for trial: {e}")
+    
     seller_server_url = seller.delta_sharing_server_url if seller else None
     
     return TrialResponse(
@@ -325,7 +419,7 @@ async def request_trial(
         buyer_id=share.buyer_id,
         dataset_id=share.dataset_id,
         share_id=share.id,
-        share_token=share_token,
+        share_token=None,
         approval_status=share.approval_status,
         seller_server_url=seller_server_url,
         is_trial=True,
@@ -399,29 +493,58 @@ async def rotate_share_token(
         settings.TOKEN_INACTIVITY_DAYS
     )
     
-    new_token = generate_share_token()
-    new_token_hash = hash_token(new_token)
-    
-    share.token = new_token
-    share.token_hash = new_token_hash
-    share.token_rotated_at = datetime.utcnow()
+    buyer = db.query(User).filter(User.id == share.buyer_id).first()
+    if not buyer or not buyer.public_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Buyer must have a registered public key for token rotation"
+        )
     
     seller = db.query(User).filter(User.id == share.seller_id).first()
-    if seller and seller.delta_sharing_server_url and share.approval_status == "approved":
+    if seller and seller.delta_sharing_server_url:
         try:
-            profile = generate_delta_sharing_profile(share, seller, new_token)
+            seller_token = create_access_token({"sub": str(seller.id)})
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
+            
+            seller_url = seller.delta_sharing_server_url.rstrip('/')
+            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+                seller_url = seller_url.replace("localhost", "seller")
+            
+            encrypt_response = requests.post(
+                f"{seller_url}/seller/encrypt-token",
+                json={
+                    "share_id": share_id,
+                    "buyer_public_key": buyer.public_key,
+                    "buyer_id": buyer.id
+                },
+                headers=seller_headers,
+                timeout=30
+            )
+            encrypt_response.raise_for_status()
+            encrypt_data = encrypt_response.json()
+            
+            share.encrypted_token = encrypt_data["encrypted_token"]
+            share.token_hash = encrypt_data["token_hash"]
+            share.token = None
+            share.token_rotated_at = datetime.utcnow()
+            
+            profile = generate_delta_sharing_profile(share, seller, None)
             share.profile_json = generate_profile_json(profile)
             share.profile_generated_at = datetime.utcnow()
+            db.commit()
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to encrypt new token via seller server: {str(e)}"
+            )
         except Exception as e:
             print(f"Warning: Failed to regenerate profile after token rotation: {e}")
-    
-    db.commit()
     
     return TokenRotationResponse(
         status="success",
         message="Token rotated successfully",
         share_id=share_id,
-        new_token=new_token,
+        new_token=None,
         rotation_recommended=rotation_recommended
     )
 
@@ -482,17 +605,48 @@ async def approve_share(
     
     share.approval_status = "approved"
     
+    buyer = db.query(User).filter(User.id == share.buyer_id).first()
+    if not buyer or not buyer.public_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Buyer must register a public key before share can be approved"
+        )
+    
     seller = db.query(User).filter(User.id == share.seller_id).first()
     if seller and seller.delta_sharing_server_url:
         try:
-            if not share.token:
-                share_token = generate_share_token()
-                share.token = share_token
-                share.token_hash = hash_token(share_token)
+            seller_token = create_access_token({"sub": str(seller.id)})
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
-            profile = generate_delta_sharing_profile(share, seller, share.token)
+            seller_url = seller.delta_sharing_server_url.rstrip('/')
+            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+                seller_url = seller_url.replace("localhost", "seller")
+            
+            encrypt_response = requests.post(
+                f"{seller_url}/seller/encrypt-token",
+                json={
+                    "share_id": share_id,
+                    "buyer_public_key": buyer.public_key,
+                    "buyer_id": buyer.id
+                },
+                headers=seller_headers,
+                timeout=30
+            )
+            encrypt_response.raise_for_status()
+            encrypt_data = encrypt_response.json()
+            
+            share.encrypted_token = encrypt_data["encrypted_token"]
+            share.token_hash = encrypt_data["token_hash"]
+            share.token = None
+            
+            profile = generate_delta_sharing_profile(share, seller, None)
             share.profile_json = generate_profile_json(profile)
             share.profile_generated_at = datetime.utcnow()
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to encrypt token via seller server: {str(e)}"
+            )
         except Exception as e:
             print(f"Warning: Failed to generate profile on approval: {e}")
     
@@ -568,16 +722,48 @@ async def get_share_profile(
                 detail="Seller server URL not configured"
             )
         
+        buyer = db.query(User).filter(User.id == share.buyer_id).first()
+        if not buyer or not buyer.public_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Buyer must register a public key before profile can be generated"
+            )
+        
         try:
-            if not share.token:
-                share_token = generate_share_token()
-                share.token = share_token
-                share.token_hash = hash_token(share_token)
+            if not share.encrypted_token:
+                seller_token = create_access_token({"sub": str(seller.id)})
+                seller_headers = {"Authorization": f"Bearer {seller_token}"}
+                
+                seller_url = seller.delta_sharing_server_url.rstrip('/')
+                if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+                    seller_url = seller_url.replace("localhost", "seller")
+                
+                encrypt_response = requests.post(
+                    f"{seller_url}/seller/encrypt-token",
+                    json={
+                        "share_id": share_id,
+                        "buyer_public_key": buyer.public_key,
+                        "buyer_id": buyer.id
+                    },
+                    headers=seller_headers,
+                    timeout=30
+                )
+                encrypt_response.raise_for_status()
+                encrypt_data = encrypt_response.json()
+                
+                share.encrypted_token = encrypt_data["encrypted_token"]
+                share.token_hash = encrypt_data["token_hash"]
+                share.token = None
             
-            profile = generate_delta_sharing_profile(share, seller, share.token)
+            profile = generate_delta_sharing_profile(share, seller, None)
             share.profile_json = generate_profile_json(profile)
             share.profile_generated_at = datetime.utcnow()
             db.commit()
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to encrypt token via seller server: {str(e)}"
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

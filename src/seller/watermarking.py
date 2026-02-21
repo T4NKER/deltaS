@@ -49,6 +49,8 @@ def detect_anchor_columns_from_schema(schema: pa.Schema, sensitive_columns: list
 
 def generate_watermark(buyer_id: int, share_id: int) -> str:
     secret = get_watermark_secret()
+    if not secret or not isinstance(secret, bytes):
+        raise ValueError("Watermark secret must be bytes")
     message = f"{buyer_id}:{share_id}".encode('utf-8')
     hmac_hash = hmac.new(secret, message, hashlib.sha256).hexdigest()[:16]
     return hmac_hash

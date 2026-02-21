@@ -120,13 +120,20 @@ class SyntheticDataRequest(BaseModel):
 class DeltaSharingServerUrlRequest(BaseModel):
     server_url: str
 
+class PublicKeyRegistrationRequest(BaseModel):
+    public_key: str
+
+class PublicKeyRegistrationResponse(BaseModel):
+    status: str
+    message: str
+
 class ShareResponse(BaseModel):
     id: int
     dataset_id: int
     dataset_name: str
     seller_id: int
     buyer_id: int
-    token: str
+    token: Optional[str] = None
     created_at: datetime
     expires_at: Optional[datetime]
     approval_status: str
@@ -137,7 +144,7 @@ class TokenRotationResponse(BaseModel):
     status: str
     message: str
     share_id: int
-    new_token: str
+    new_token: Optional[str] = None
     rotation_recommended: Optional[bool] = None
 
 class ApprovalResponse(BaseModel):

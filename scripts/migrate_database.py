@@ -345,8 +345,42 @@ def migrate_database():
                 ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
             """))
             print("Added last_used_at column to shares")
+            conn.commit()
         except Exception as e:
             print(f"last_used_at column: {e}")
+            conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE users 
+                ADD COLUMN IF NOT EXISTS public_key TEXT;
+            """))
+            print("Added public_key column to users")
+            conn.commit()
+        except Exception as e:
+            print(f"public_key column: {e}")
+            conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ADD COLUMN IF NOT EXISTS encrypted_token TEXT;
+            """))
+            print("Added encrypted_token column to shares")
+            conn.commit()
+        except Exception as e:
+            print(f"encrypted_token column: {e}")
+            conn.rollback()
+        
+        try:
+            conn.execute(text("""
+                ALTER TABLE shares 
+                ALTER COLUMN token DROP NOT NULL;
+            """))
+            print("Made token column nullable")
+            conn.commit()
+        except Exception as e:
+            print(f"token nullable: {e}")
             conn.rollback()
         
         print("\nDatabase migration completed!")
