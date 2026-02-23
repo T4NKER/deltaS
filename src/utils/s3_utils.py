@@ -1,6 +1,14 @@
 import os
 import boto3
 from botocore.config import Config
+from typing import Tuple
+
+def _get_s3_config() -> Tuple[str, str, str, str]:
+    endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:4566')
+    access_key = os.getenv('S3_ACCESS_KEY', 'test')
+    secret_key = os.getenv('S3_SECRET_KEY', 'test')
+    region = os.getenv('S3_REGION', 'us-east-1')
+    return endpoint_url, access_key, secret_key, region
 
 def fix_endpoint_url_for_docker(endpoint_url: str) -> str:
     if not endpoint_url:
@@ -15,11 +23,7 @@ def fix_endpoint_url_for_client(endpoint_url: str) -> str:
     return endpoint_url.replace('localstack', 'localhost')
 
 def get_s3_client():
-    endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:4566')
-    access_key = os.getenv('S3_ACCESS_KEY', 'test')
-    secret_key = os.getenv('S3_SECRET_KEY', 'test')
-    region = os.getenv('S3_REGION', 'us-east-1')
-    
+    endpoint_url, access_key, secret_key, region = _get_s3_config()
     endpoint_url = fix_endpoint_url_for_docker(endpoint_url) if endpoint_url else None
     
     return boto3.client(
@@ -32,11 +36,7 @@ def get_s3_client():
     )
 
 def get_delta_storage_options() -> dict:
-    endpoint_url = os.getenv('S3_ENDPOINT_URL', 'http://localhost:4566')
-    access_key = os.getenv('S3_ACCESS_KEY', 'test')
-    secret_key = os.getenv('S3_SECRET_KEY', 'test')
-    region = os.getenv('S3_REGION', 'us-east-1')
-    
+    endpoint_url, access_key, secret_key, region = _get_s3_config()
     endpoint_url = fix_endpoint_url_for_docker(endpoint_url) if endpoint_url else None
     
     return {

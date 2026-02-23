@@ -29,7 +29,7 @@ def detect_phone_numbers(series: pd.Series) -> int:
             parsed = phonenumbers.parse(value_str, None)
             if phonenumbers.is_valid_number(parsed):
                 count += 1
-        except:
+        except Exception:
             pass
     return count
 

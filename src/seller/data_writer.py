@@ -33,7 +33,7 @@ def write_data_continuously(
     
     try:
         s3_client.head_bucket(Bucket=bucket_name)
-    except:
+    except Exception:
         try:
             s3_client.create_bucket(Bucket=bucket_name)
             print(f"Created bucket: {bucket_name}")

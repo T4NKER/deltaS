@@ -37,6 +37,9 @@ from src.utils.delta_sharing_utils import (
 )
 from src.utils.predicate_parser import parse_query_predicates
 
+DEFAULT_TRIAL_ROW_LIMIT = 100
+DEFAULT_SYNTHETIC_DP_EPSILON = 0.1
+
 app = FastAPI(title="Delta Sharing Server")
 
 @app.get("/shares")
@@ -183,7 +186,7 @@ async def query_table(
 ):
     try:
         body = await request.json() if request.headers.get("content-type") == "application/json" else {}
-    except:
+    except Exception:
         body = {}
     
     token = extract_token_from_header(authorization)
@@ -235,8 +238,8 @@ async def query_table(
                 synthetic_df, _ = generate_synthetic_data(
                     original_table_path=dataset.table_path,
                     output_table_path=synthetic_path,
-                    num_rows=share.trial_row_limit or 100,
-                    dp_epsilon=0.1,
+                    num_rows=share.trial_row_limit or DEFAULT_TRIAL_ROW_LIMIT,
+                    dp_epsilon=DEFAULT_SYNTHETIC_DP_EPSILON,
                     preserve_statistics=True,
                     seed=share.id
                 )
@@ -253,21 +256,7 @@ async def query_table(
             delta_table = DeltaTable(table_path, storage_options=storage_options)
         
         arrow_dataset = delta_table.to_pyarrow_dataset()
-        
-        try:
-            arrow_table = delta_table.to_pyarrow_table()
-            original_schema = arrow_table.schema
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to get PyArrow schema: {str(e)}")
-        
-        if not isinstance(original_schema, pa.Schema):
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Expected PyArrow Schema, got type: {type(original_schema)}. "
-                       f"Schema type name: {type(original_schema).__name__}, "
-                       f"Module: {type(original_schema).__module__}. "
-                       f"This indicates the server needs to be restarted with the updated code."
-            )
+        original_schema = arrow_dataset.schema
         
         schema_col_names = [field.name for field in original_schema]
         
@@ -508,7 +497,7 @@ async def query_table(
             try:
                 response = s3_client.head_object(Bucket=bucket, Key=key)
                 file_size = response.get('ContentLength', 0)
-            except:
+            except Exception:
                 file_size = 0
             
             file_action = {

@@ -3,18 +3,23 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime, timedelta
 import os
-from src.models.database import Share, Dataset
+import json
+from src.models.database import Share, Dataset, AuditLog
 from src.utils.s3_utils import get_full_s3_path
 from src.utils.token_utils import verify_token_hash, is_token_expired
 
-SELLER_ID = os.getenv("SELLER_ID", None)
-if SELLER_ID and SELLER_ID.strip():
+PRESIGNED_URL_EXPIRY_SECONDS = 3600
+
+def _parse_seller_id() -> Optional[int]:
+    seller_id_str = os.getenv("SELLER_ID")
+    if not seller_id_str or not seller_id_str.strip():
+        return None
     try:
-        SELLER_ID = int(SELLER_ID.strip())
+        return int(seller_id_str.strip())
     except (ValueError, AttributeError):
-        SELLER_ID = None
-else:
-    SELLER_ID = None
+        return None
+
+SELLER_ID = _parse_seller_id()
 
 def extract_token_from_header(authorization: Optional[str]) -> str:
     if not authorization or not authorization.startswith("Bearer "):
@@ -62,7 +67,7 @@ def get_presigned_url(s3_client, bucket: str, key: str, endpoint_for_client: str
             presigned_url = s3_client.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': bucket, 'Key': key},
-                ExpiresIn=3600
+                ExpiresIn=PRESIGNED_URL_EXPIRY_SECONDS
             )
             if 'localstack:4566' in presigned_url:
                 presigned_url = presigned_url.replace('localstack:4566', 'localhost:4566')
@@ -87,16 +92,14 @@ def cleanup_old_watermarked_files(s3_client, bucket: str, prefix: str, max_age_h
         pass
 
 def get_share_from_token(token: str, db: Session) -> Share:
-    shares = db.query(Share).filter(Share.revoked == False).all()
+    matching_share = db.query(Share).filter(Share.token == token).first()
     
-    matching_share = None
-    for share in shares:
-        if share.token and share.token == token:
-            matching_share = share
-            break
-        elif share.token_hash and verify_token_hash(token, share.token_hash):
-            matching_share = share
-            break
+    if not matching_share:
+        shares_with_hash = db.query(Share).filter(Share.token_hash.isnot(None)).all()
+        for share in shares_with_hash:
+            if verify_token_hash(token, share.token_hash):
+                matching_share = share
+                break
     
     if not matching_share:
         raise HTTPException(status_code=401, detail="Invalid share token")
@@ -107,7 +110,14 @@ def get_share_from_token(token: str, db: Session) -> Share:
         raise HTTPException(status_code=403, detail="This server only serves shares for its configured seller")
     
     if share.revoked:
-        raise HTTPException(status_code=401, detail="Share has been revoked")
+        db.add(AuditLog(
+            buyer_id=share.buyer_id,
+            dataset_id=share.dataset_id,
+            share_id=share.id,
+            client_metadata=json.dumps({"denied_reason": "revoked"})
+        ))
+        db.commit()
+        raise HTTPException(status_code=403, detail="Share has been revoked")
     
     if is_token_expired(share.expires_at):
         raise HTTPException(status_code=401, detail="Share token expired")

@@ -20,8 +20,8 @@ def generate_synthetic_data(
     try:
         delta_table = DeltaTable(full_original_path, storage_options=storage_options)
         original_df = delta_table.to_pandas()
-        arrow_table = delta_table.to_pyarrow_table()
-        schema = arrow_table.schema
+        arrow_dataset = delta_table.to_pyarrow_dataset()
+        schema = arrow_dataset.schema
     except Exception as e:
         raise ValueError(f"Failed to read original table: {str(e)}")
     

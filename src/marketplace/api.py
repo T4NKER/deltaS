@@ -27,6 +27,16 @@ from src.utils.settings import get_settings
 from src.utils.encryption import validate_public_key
 from src.seller.profile_generator import generate_delta_sharing_profile, generate_profile_json
 
+HTTP_REQUEST_TIMEOUT = 30
+
+def _fix_seller_url_for_docker(seller_url: str) -> str:
+    if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
+        seller_url = seller_url.replace("localhost", "seller")
+    elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
+        seller_url = seller_url.replace("seller:", "localhost:")
+        seller_url = seller_url.replace("seller/", "localhost/")
+    return seller_url
+
 app = FastAPI(title="Delta Sharing Marketplace API")
 
 @app.on_event("startup")
@@ -296,12 +306,7 @@ async def purchase_dataset(
                     seller_token = create_access_token({"sub": str(seller.id)})
                     seller_headers = {"Authorization": f"Bearer {seller_token}"}
                     
-                    seller_url = seller.delta_sharing_server_url.rstrip('/')
-                    if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-                        seller_url = seller_url.replace("localhost", "seller")
-                    elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
-                        seller_url = seller_url.replace("seller:", "localhost:")
-                        seller_url = seller_url.replace("seller/", "localhost/")
+                    seller_url = _fix_seller_url_for_docker(seller.delta_sharing_server_url.rstrip('/'))
                     
                     encrypt_response = requests.post(
                         f"{seller_url}/seller/encrypt-token",
@@ -311,7 +316,7 @@ async def purchase_dataset(
                             "buyer_id": current_user.id
                         },
                         headers=seller_headers,
-                        timeout=30
+                        timeout=HTTP_REQUEST_TIMEOUT
                     )
                     encrypt_response.raise_for_status()
                     encrypt_data = encrypt_response.json()
@@ -423,11 +428,7 @@ async def request_trial(
             seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             seller_url = seller.delta_sharing_server_url.rstrip('/')
-            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-                seller_url = seller_url.replace("localhost", "seller")
-            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
-                seller_url = seller_url.replace("seller:", "localhost:")
-                seller_url = seller_url.replace("seller/", "localhost/")
+            seller_url = _fix_seller_url_for_docker(seller_url)
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -437,7 +438,7 @@ async def request_trial(
                     "buyer_id": current_user.id
                 },
                 headers=seller_headers,
-                timeout=30
+                timeout=HTTP_REQUEST_TIMEOUT
             )
             encrypt_response.raise_for_status()
             encrypt_data = encrypt_response.json()
@@ -555,11 +556,7 @@ async def rotate_share_token(
             seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             seller_url = seller.delta_sharing_server_url.rstrip('/')
-            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-                seller_url = seller_url.replace("localhost", "seller")
-            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
-                seller_url = seller_url.replace("seller:", "localhost:")
-                seller_url = seller_url.replace("seller/", "localhost/")
+            seller_url = _fix_seller_url_for_docker(seller_url)
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -569,7 +566,7 @@ async def rotate_share_token(
                     "buyer_id": buyer.id
                 },
                 headers=seller_headers,
-                timeout=30
+                timeout=HTTP_REQUEST_TIMEOUT
             )
             encrypt_response.raise_for_status()
             encrypt_data = encrypt_response.json()
@@ -669,11 +666,7 @@ async def approve_share(
             seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             seller_url = seller.delta_sharing_server_url.rstrip('/')
-            if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-                seller_url = seller_url.replace("localhost", "seller")
-            elif os.getenv("DOCKER_ENV") != "true" and "seller:" in seller_url:
-                seller_url = seller_url.replace("seller:", "localhost:")
-                seller_url = seller_url.replace("seller/", "localhost/")
+            seller_url = _fix_seller_url_for_docker(seller_url)
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -683,7 +676,7 @@ async def approve_share(
                     "buyer_id": buyer.id
                 },
                 headers=seller_headers,
-                timeout=30
+                timeout=HTTP_REQUEST_TIMEOUT
             )
             encrypt_response.raise_for_status()
             encrypt_data = encrypt_response.json()
@@ -788,8 +781,7 @@ async def get_share_profile(
                 seller_headers = {"Authorization": f"Bearer {seller_token}"}
                 
                 seller_url = seller.delta_sharing_server_url.rstrip('/')
-                if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-                    seller_url = seller_url.replace("localhost", "seller")
+                seller_url = _fix_seller_url_for_docker(seller_url)
                 
                 encrypt_response = requests.post(
                     f"{seller_url}/seller/encrypt-token",
@@ -799,7 +791,7 @@ async def get_share_profile(
                         "buyer_id": buyer.id
                     },
                     headers=seller_headers,
-                    timeout=30
+                    timeout=HTTP_REQUEST_TIMEOUT
                 )
                 encrypt_response.raise_for_status()
                 encrypt_data = encrypt_response.json()
@@ -930,13 +922,12 @@ async def request_file_download(
         seller_headers = {"Authorization": f"Bearer {seller_token}"}
         
         seller_url = seller.delta_sharing_server_url.rstrip('/')
-        if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-            seller_url = seller_url.replace("localhost", "seller")
+        seller_url = _fix_seller_url_for_docker(seller_url)
         response = requests.post(
             f"{seller_url}/seller/file-download/{share_id}",
             json={"expiry_hours": request.expiry_hours},
             headers=seller_headers,
-            timeout=30
+            timeout=HTTP_REQUEST_TIMEOUT
         )
         response.raise_for_status()
         return FileDownloadResponse(**response.json())
@@ -978,12 +969,11 @@ async def revoke_file_download(
         seller_headers = {"Authorization": f"Bearer {seller_token}"}
         
         seller_url = seller.delta_sharing_server_url.rstrip('/')
-        if os.getenv("DOCKER_ENV") == "true" and "localhost" in seller_url:
-            seller_url = seller_url.replace("localhost", "seller")
+        seller_url = _fix_seller_url_for_docker(seller_url)
         response = requests.delete(
             f"{seller_url}/seller/file-download/{snapshot_id}",
             headers=seller_headers,
-            timeout=30
+            timeout=HTTP_REQUEST_TIMEOUT
         )
         response.raise_for_status()
         result = response.json()

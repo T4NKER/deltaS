@@ -180,7 +180,7 @@ def generate_pseudorows(df: pd.DataFrame, watermark: str, num_pseudorows: int = 
                                     base_date = datetime(2020, 1, 1)
                                     days_offset = watermark_byte * 10 + (watermark_seed % 100) + i
                                     row[col] = (base_date + timedelta(days=days_offset)).isoformat()
-                            except:
+                            except Exception:
                                 idx = (watermark_byte + i) % len(unique_vals)
                                 row[col] = unique_vals[idx]
                         else:
@@ -237,9 +237,9 @@ def apply_watermark_to_dataframe(df: pd.DataFrame, watermark: str, is_trial: boo
                         try:
                             pd.to_datetime(sample_val)
                             timestamp_cols.append(col)
-                        except:
+                        except Exception:
                             pass
-            except:
+            except Exception:
                 pass
     
     if is_trial:
