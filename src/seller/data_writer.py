@@ -1,5 +1,6 @@
 import time
 import os
+import json
 import pandas as pd
 import pyarrow as pa
 from datetime import datetime
@@ -55,14 +56,16 @@ def write_data_continuously(
         if i == 0:
             try:
                 sensitive_columns, pii_types, risk_score, risk_level = analyze_dataset_for_pii(data)
+                dataset.risk_score = risk_score
+                dataset.risk_level = risk_level
+                dataset.detected_pii_types = ','.join(pii_types.keys()) if pii_types else None
+                dataset.sensitive_columns = json.dumps(sensitive_columns) if sensitive_columns else None
+                dataset.requires_approval = risk_score >= 20
+                db.commit()
                 if pii_types:
                     print(f"[{datetime.utcnow()}] PII detected: {dict(pii_types)}, Risk: {risk_score:.2f} ({risk_level})")
-                    dataset.risk_score = risk_score
-                    dataset.risk_level = risk_level
-                    dataset.detected_pii_types = ','.join(pii_types.keys()) if pii_types else None
-                    dataset.sensitive_columns = ','.join(sensitive_columns.keys()) if sensitive_columns else None
-                    dataset.requires_approval = risk_score >= 20
-                    db.commit()
+                else:
+                    print(f"[{datetime.utcnow()}] PII analysis complete: No PII detected, Risk: {risk_score:.2f} ({risk_level})")
             except Exception as e:
                 print(f"[{datetime.utcnow()}] Warning: PII analysis failed: {e}")
         

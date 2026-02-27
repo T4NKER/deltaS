@@ -2,14 +2,31 @@ import json
 import hashlib
 import hmac
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas as pd
 import pyarrow as pa
+import numpy as np
 from deltalake import DeltaTable
 from src.seller.pii_detection import analyze_dataset_for_pii
 from src.seller.watermarking import detect_anchor_columns_from_schema
 from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
 from src.utils.settings import get_settings
+
+def _convert_to_native_types(obj: Any) -> Any:
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {k: _convert_to_native_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, set):
+        return {_convert_to_native_types(item) for item in obj}
+    else:
+        return obj
 
 def generate_metadata_signature(metadata_dict: Dict[str, Any], seller_id: int) -> str:
     settings = get_settings()
@@ -46,7 +63,23 @@ def publish_dataset_metadata(
         }
         schema_fields.append(field_dict)
     
-    sample_df = delta_table.to_pandas().head(100)
+    try:
+        scanner = arrow_dataset.scanner()
+        batches = []
+        total_rows = 0
+        for batch in scanner.to_batches():
+            batches.append(batch)
+            total_rows += len(batch)
+            if total_rows >= 100:
+                break
+        if not batches:
+            raise ValueError("No data found in table")
+        sample_table = pa.Table.from_batches(batches)
+        if len(sample_table) > 100:
+            sample_table = sample_table.slice(0, 100)
+        sample_df = sample_table.to_pandas()
+    except Exception as e:
+        raise ValueError(f"Failed to read sample data from table: {str(e)}")
     
     sensitive_columns_dict, pii_types_dict, risk_score, risk_level = analyze_dataset_for_pii(sample_df)
     
@@ -57,27 +90,32 @@ def publish_dataset_metadata(
     if not anchor_columns:
         raise ValueError("Could not detect suitable anchor columns. Please specify anchor_columns explicitly.")
     
+    pii_types_converted = {str(k): int(v) for k, v in pii_types_dict.items()}
+    sensitive_columns_converted = {str(k): [str(item) for item in v] if isinstance(v, list) else str(v) for k, v in sensitive_columns_dict.items()}
+    
     metadata = {
         "version": "1.0",
-        "seller_id": seller_id,
-        "name": name,
-        "description": description,
-        "table_path": table_path,
+        "seller_id": int(seller_id),
+        "name": str(name),
+        "description": str(description) if description else None,
+        "table_path": str(table_path),
         "schema": {
             "fields": schema_fields,
-            "metadata": schema.metadata if schema.metadata else {}
+            "metadata": dict(schema.metadata) if schema.metadata else {}
         },
-        "anchor_columns": anchor_columns,
+        "anchor_columns": [str(col) for col in anchor_columns],
         "pii_analysis": {
-            "sensitive_columns": sensitive_columns_dict,
-            "pii_types": dict(pii_types_dict),
+            "sensitive_columns": sensitive_columns_converted,
+            "pii_types": pii_types_converted,
             "risk_score": float(risk_score),
-            "risk_level": risk_level
+            "risk_level": str(risk_level)
         },
-        "sample_row_count": len(sample_df),
+        "sample_row_count": int(len(sample_df)),
         "total_row_count": None,
-        "published_at": datetime.utcnow().isoformat()
+        "published_at": datetime.now(timezone.utc).isoformat()
     }
+    
+    metadata = _convert_to_native_types(metadata)
     
     signature = generate_metadata_signature(metadata, seller_id)
     metadata["signature"] = signature

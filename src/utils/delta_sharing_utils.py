@@ -6,7 +6,7 @@ import os
 import json
 from src.models.database import Share, Dataset, AuditLog
 from src.utils.s3_utils import get_full_s3_path
-from src.utils.token_utils import verify_token_hash, is_token_expired
+from src.utils.token_utils import verify_token_hash, is_token_expired, hash_token
 
 PRESIGNED_URL_EXPIRY_SECONDS = 3600
 
@@ -95,11 +95,11 @@ def get_share_from_token(token: str, db: Session) -> Share:
     matching_share = db.query(Share).filter(Share.token == token).first()
     
     if not matching_share:
-        shares_with_hash = db.query(Share).filter(Share.token_hash.isnot(None)).all()
-        for share in shares_with_hash:
-            if verify_token_hash(token, share.token_hash):
-                matching_share = share
-                break
+        try:
+            computed_hash = hash_token(token)
+            matching_share = db.query(Share).filter(Share.token_hash == computed_hash).first()
+        except Exception:
+            pass
     
     if not matching_share:
         raise HTTPException(status_code=401, detail="Invalid share token")

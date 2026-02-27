@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 from delta_sharing import SharingClient, load_as_pandas
 from delta_sharing.protocol import DeltaSharingProfile
 import pyarrow as pa
-from deltalake import write_deltalake
+from deltalake import write_deltalake, DeltaTable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.database import SessionLocal, Dataset, User
 from src.seller.data_writer import write_data_continuously
+from src.seller.pii_detection import analyze_dataset_for_pii
 from src.utils.s3_utils import get_s3_client, get_bucket_name, get_delta_storage_options, get_full_s3_path
 from tests.utils import check_watermark, extract_list_items, api_post, api_get, api_delete, register_buyer_public_key, decrypt_token
 from delta_sharing.protocol import DeltaSharingProfile
@@ -1096,6 +1097,213 @@ def test_phase2_filtering():
     print("\n[OK] Phase 2 filtering E2E test completed successfully!")
     return True
 
+def test_pii_detection_on_write():
+    print("\n" + "="*80)
+    print("PII Detection on Write E2E Test")
+    print("="*80)
+    
+    os.environ.setdefault('S3_ENDPOINT_URL', 'http://localhost:4566')
+    os.environ.setdefault('S3_ACCESS_KEY', 'test')
+    os.environ.setdefault('S3_SECRET_KEY', 'test')
+    os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
+    os.environ.setdefault('S3_REGION', 'us-east-1')
+    
+    try:
+        response = requests.get("http://localhost:4566/_localstack/health", timeout=2)
+        if response.status_code != 200:
+            raise Exception("LocalStack health check failed")
+        print("LocalStack is running")
+    except Exception as e:
+        print(f"LocalStack is not running or not accessible: {e}")
+        raise
+    
+    try:
+        response = requests.get(f"{DELTA_SHARING_SERVER_URL}/health", timeout=2)
+        if response.status_code != 200:
+            raise Exception("Delta Sharing server health check failed")
+        print("Delta Sharing server is running")
+    except Exception as e:
+        print(f"Delta Sharing server is not running or not accessible: {e}")
+        raise
+    
+    print("\n[0] Ensuring S3 bucket exists...")
+    s3_client = get_s3_client()
+    bucket_name = get_bucket_name()
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"[OK] Bucket {bucket_name} already exists")
+    except:
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+            print(f"[OK] Created bucket: {bucket_name}")
+        except Exception as e:
+            print(f"[WARN] Warning: Could not create bucket {bucket_name}: {e}")
+    
+    print("\n[1] Registering users...")
+    seller_email = f"seller_pii_{int(time.time())}@test.com"
+    password = "testpass123"
+    
+    seller_data = api_post(f"{MARKETPLACE_URL}/register", {
+        "email": seller_email,
+        "password": password,
+        "role": "seller"
+    }, expected_status=201)
+    seller_id = seller_data["id"]
+    print(f"[OK] Seller registered: {seller_email} (ID: {seller_id})")
+    
+    print("\n[2] Logging in...")
+    seller_login = api_post(f"{MARKETPLACE_URL}/login", {
+        "email": seller_email,
+        "password": password
+    })
+    seller_token = seller_login["access_token"]
+    seller_headers = {"Authorization": f"Bearer {seller_token}"}
+    print("[OK] Seller logged in")
+    
+    print("\n[3] Creating dataset...")
+    dataset_data = api_post(f"{MARKETPLACE_URL}/datasets", {
+        "name": "PII Test Dataset",
+        "description": "Dataset with PII for testing detection",
+        "table_path": f"pii_test_table_{int(time.time())}",
+        "price": 0.0,
+        "is_public": True,
+        "anchor_columns": "user_id,email"
+    }, headers=seller_headers, expected_status=201)
+    dataset_id = dataset_data["id"]
+    print(f"[OK] Dataset created: {dataset_id}")
+    
+    print("\n[4] Setting seller's Delta Sharing server URL...")
+    db = SessionLocal()
+    try:
+        seller_user = db.query(User).filter(User.id == seller_id).first()
+        if seller_user:
+            seller_user.delta_sharing_server_url = DELTA_SHARING_SERVER_URL
+            db.commit()
+            print(f"[OK] Seller server URL set: {DELTA_SHARING_SERVER_URL}")
+    finally:
+        db.close()
+    
+    print("\n[5] Writing data with PII...")
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            raise Exception(f"Dataset {dataset_id} not found")
+        
+        bucket_name = get_bucket_name()
+        table_path = get_full_s3_path(bucket_name, dataset.table_path)
+        storage_options = get_delta_storage_options()
+        
+        test_data = pd.DataFrame({
+            'user_id': [1, 2, 3, 4, 5],
+            'email': ['user1@example.com', 'user2@test.org', 'user3@domain.com', 'user4@example.com', 'user5@test.org'],
+            'ssn': ['123-45-6789', '987-65-4321', '111-22-3333', '444-55-6666', '777-88-9999'],
+            'phone': ['+1-555-123-4567', '+1-555-987-6543', '+372-555-1234', '+1-555-111-2222', '+1-555-333-4444'],
+            'credit_card': ['1234-5678-9012-3456', '9876-5432-1098-7654', '1111-2222-3333-4444', '5555-6666-7777-8888', '9999-0000-1111-2222'],
+            'ip_address': ['192.168.1.1', '10.0.0.1', '172.16.0.1', '192.168.0.100', '10.0.0.50'],
+            'name': ['John Doe', 'Jane Smith', 'Bob Johnson', 'Alice Brown', 'Charlie Wilson'],
+            'age': [25, 30, 35, 28, 42]
+        })
+        
+        table = pa.Table.from_pandas(test_data)
+        write_deltalake(table_path, table, mode='overwrite', storage_options=storage_options)
+        print(f"[OK] Wrote {len(test_data)} rows with PII data")
+        print(f"  Emails: {len(test_data['email'])}")
+        print(f"  SSNs: {len(test_data['ssn'])}")
+        print(f"  Credit cards: {len(test_data['credit_card'])}")
+    finally:
+        db.close()
+    
+    print("\n[6] Reading table and triggering PII detection...")
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            raise Exception(f"Dataset {dataset_id} not found")
+        
+        bucket_name = get_bucket_name()
+        table_path = get_full_s3_path(bucket_name, dataset.table_path)
+        storage_options = get_delta_storage_options()
+        
+        delta_table = DeltaTable(table_path, storage_options=storage_options)
+        sample_df = delta_table.to_pandas().head(100)
+        
+        print(f"  Read {len(sample_df)} rows from table")
+        print(f"  Columns: {list(sample_df.columns)}")
+        
+        sensitive_columns, pii_types, risk_score, risk_level = analyze_dataset_for_pii(sample_df)
+        
+        dataset.risk_score = risk_score
+        dataset.risk_level = risk_level
+        dataset.detected_pii_types = ','.join(pii_types.keys()) if pii_types else None
+        dataset.sensitive_columns = json.dumps(sensitive_columns) if sensitive_columns else None
+        dataset.requires_approval = risk_score >= 20
+        db.commit()
+        
+        print(f"  [OK] PII analysis complete:")
+        print(f"    Risk score: {risk_score:.2f}")
+        print(f"    Risk level: {risk_level}")
+        if pii_types:
+            print(f"    PII types: {dict(pii_types)}")
+        if sensitive_columns:
+            print(f"    Sensitive columns: {sensitive_columns}")
+    finally:
+        db.close()
+    
+    print("\n[7] Verifying PII detection results in database...")
+    db = SessionLocal()
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            raise Exception(f"Dataset {dataset_id} not found")
+        
+        print(f"  Risk score: {dataset.risk_score}")
+        print(f"  Risk level: {dataset.risk_level}")
+        print(f"  Detected PII types: {dataset.detected_pii_types}")
+        print(f"  Sensitive columns: {dataset.sensitive_columns}")
+        print(f"  Requires approval: {dataset.requires_approval}")
+        
+        assert dataset.risk_score is not None, "Risk score should be set"
+        assert dataset.risk_level is not None, "Risk level should be set"
+        assert dataset.risk_score > 0, f"Risk score should be > 0 (got {dataset.risk_score})"
+        assert dataset.risk_level in ['low', 'medium', 'high'], f"Risk level should be low/medium/high (got {dataset.risk_level})"
+        
+        if dataset.detected_pii_types:
+            detected_types = dataset.detected_pii_types.split(',')
+            print(f"  [OK] Detected PII types: {detected_types}")
+            assert len(detected_types) > 0, "Should detect at least one PII type"
+        
+        if dataset.sensitive_columns:
+            sensitive_cols = json.loads(dataset.sensitive_columns) if isinstance(dataset.sensitive_columns, str) else dataset.sensitive_columns
+            print(f"  [OK] Sensitive columns: {sensitive_cols}")
+            assert len(sensitive_cols) > 0, "Should identify at least one sensitive column"
+        
+        expected_requires_approval = dataset.risk_score >= 20
+        assert dataset.requires_approval == expected_requires_approval, \
+            f"requires_approval should be {expected_requires_approval} for risk_score {dataset.risk_score}"
+        
+        print(f"\n[OK] PII detection verified:")
+        print(f"  Risk score: {dataset.risk_score:.2f}")
+        print(f"  Risk level: {dataset.risk_level}")
+        if dataset.detected_pii_types:
+            print(f"  PII types: {dataset.detected_pii_types}")
+        if dataset.sensitive_columns:
+            print(f"  Sensitive columns: {dataset.sensitive_columns}")
+        
+    finally:
+        db.close()
+    
+    print("\n" + "="*80)
+    print("PII Detection Test Summary:")
+    print(f"  Dataset ID: {dataset_id}")
+    print(f"  Risk score: {dataset.risk_score:.2f}")
+    print(f"  Risk level: {dataset.risk_level}")
+    print(f"  Requires approval: {dataset.requires_approval}")
+    print("="*80)
+    
+    print("\n[OK] PII detection on write E2E test completed successfully!")
+    return True
+
 if __name__ == "__main__":
     test_e2e_delta_sharing()
     print("\n" + "="*80)
@@ -1106,4 +1314,8 @@ if __name__ == "__main__":
     print("Starting Phase 2 Filtering Test...")
     print("="*80)
     test_phase2_filtering()
+    print("\n" + "="*80)
+    print("Starting PII Detection Test...")
+    print("="*80)
+    test_pii_detection_on_write()
 

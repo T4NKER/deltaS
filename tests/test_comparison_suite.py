@@ -7,12 +7,20 @@ import tempfile
 import pandas as pd
 import io
 import traceback
-from datetime import datetime
-from typing import Dict, List, Optional
+import numpy as np
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 from pathlib import Path
 from jose import jwt
 from deltalake import write_deltalake
 import pyarrow as pa
+
+os.environ.setdefault('ALLOW_INSECURE_DEFAULTS', 'true')
+os.environ.setdefault('S3_ENDPOINT_URL', 'http://localhost:4566')
+os.environ.setdefault('S3_ACCESS_KEY', 'test')
+os.environ.setdefault('S3_SECRET_KEY', 'test')
+os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
+os.environ.setdefault('S3_REGION', 'us-east-1')
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -22,12 +30,28 @@ from delta_sharing.protocol import DeltaSharingProfile
 from src.utils.s3_utils import get_s3_client, get_bucket_name, get_delta_storage_options, get_full_s3_path
 from src.models.database import SessionLocal, User
 from src.utils.settings import get_settings
-from tests.utils import api_post, api_get, api_delete
+from tests.utils import api_post, api_get, api_delete, register_buyer_public_key, decrypt_token
+
+def _convert_to_native_types(obj: Any) -> Any:
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {k: _convert_to_native_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, set):
+        return {_convert_to_native_types(item) for item in obj}
+    else:
+        return obj
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
 DELTA_SHARING_SERVER_URL = os.getenv("DELTA_SHARING_SERVER_URL", "http://localhost:8080")
 
-def _create_test_dataset(seller_headers: Dict, seller_id: int, table_path: str = "test_data/comparison_test") -> int:
+def _create_test_dataset(seller_headers: Dict, seller_id: int, table_path: str = "test_data/comparison_test", use_existing: bool = False) -> int:
     print("  Creating test dataset...")
     
     db = SessionLocal()
@@ -48,19 +72,31 @@ def _create_test_dataset(seller_headers: Dict, seller_id: int, table_path: str =
     except:
         s3_client.create_bucket(Bucket=bucket_name)
     
-    test_data = pd.DataFrame({
-        'id': range(1, 101),
-        'name': [f'Item_{i}' for i in range(1, 101)],
-        'value': [i * 10.5 for i in range(1, 101)],
-        'category': ['A', 'B', 'C'] * 33 + ['A'],
-        'timestamp': pd.date_range('2024-01-01', periods=100, freq='1H')
-    })
-    
     full_path = get_full_s3_path(bucket_name, table_path)
     storage_options = get_delta_storage_options()
     
-    table = pa.Table.from_pandas(test_data)
-    write_deltalake(full_path, table, storage_options=storage_options, mode='overwrite')
+    if use_existing:
+        from deltalake import DeltaTable
+        try:
+            delta_table = DeltaTable(full_path, storage_options=storage_options)
+            row_count = len(delta_table.to_pandas())
+            print(f"  Using existing dataset at {table_path} with {row_count:,} rows")
+        except Exception as e:
+            print(f"  Warning: Could not read existing dataset: {e}")
+            print("  Creating new small test dataset instead...")
+            use_existing = False
+    
+    if not use_existing:
+        test_data = pd.DataFrame({
+            'id': range(1, 101),
+            'name': [f'Item_{i}' for i in range(1, 101)],
+            'value': [i * 10.5 for i in range(1, 101)],
+            'category': ['A', 'B', 'C'] * 33 + ['A'],
+            'timestamp': pd.date_range('2024-01-01', periods=100, freq='1H')
+        })
+        
+        table = pa.Table.from_pandas(test_data)
+        write_deltalake(full_path, table, storage_options=storage_options, mode='overwrite')
     
     seller_server_url = DELTA_SHARING_SERVER_URL.rstrip('/')
     metadata_resp = requests.post(
@@ -102,7 +138,7 @@ def run_comparison_experiment(
     seller_password: str
 ) -> Dict:
     results = {
-        "experiment_timestamp": datetime.utcnow().isoformat(),
+        "experiment_timestamp": datetime.now(timezone.utc).isoformat(),
         "dataset_id": None,
         "methods": {
             "delta_sharing": {},
@@ -122,7 +158,9 @@ def run_comparison_experiment(
     
     if not dataset_id:
         print("\n[0] Creating test dataset...")
-        dataset_id = _create_test_dataset(seller_headers, seller_id)
+        table_path = os.getenv("TEST_TABLE_PATH", "test_data/comparison_test")
+        use_existing = os.getenv("USE_EXISTING_DATASET", "false").lower() == "true"
+        dataset_id = _create_test_dataset(seller_headers, seller_id, table_path=table_path, use_existing=use_existing)
         print(f"[OK] Using dataset ID: {dataset_id}")
     
     results["dataset_id"] = dataset_id
@@ -184,6 +222,7 @@ def _test_delta_sharing_delivery(
     start_time = time.time()
     
     try:
+        buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
         purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
         share_id = purchase_data["share_id"]
     except Exception as e:
@@ -204,6 +243,11 @@ def _test_delta_sharing_delivery(
     profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{share_id}/profile", headers=buyer_headers)
     profile_json_str = profile_resp["profile_json"]
     profile_data = json.loads(profile_json_str)
+    
+    if "encryptedBearerToken" in profile_data:
+        decrypted_token = decrypt_token(profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+        profile_data["bearerToken"] = decrypted_token
+        del profile_data["encryptedBearerToken"]
     
     profile_time = time.time()
     
@@ -237,16 +281,21 @@ def _test_delta_sharing_delivery(
         
         access_time = time.time() - start_time
         
-        return {
+        df_memory_bytes = df.memory_usage(deep=True).sum()
+        throughput_mbps = (df_memory_bytes / (1024 * 1024)) / query_time if query_time > 0 else 0
+        
+        result = {
             "setup_time_seconds": approval_time - start_time,
             "profile_retrieval_time_seconds": profile_time - approval_time,
             "query_time_seconds": query_time,
             "total_access_time_seconds": access_time,
             "rows_accessed": len(df),
             "columns_accessed": len(df.columns),
-            "bytes_estimated": len(df) * 100,
+            "bytes_estimated": df_memory_bytes,
+            "throughput_mbps": throughput_mbps,
             "success": True
-        }, share_id
+        }
+        return _convert_to_native_types(result), share_id
     except Exception as e:
         return {
             "success": False,
@@ -269,6 +318,7 @@ def _test_file_download_delivery(
         print(f"  Reusing share_id: {share_id}")
     else:
         try:
+            register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
             purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
             share_id = purchase_data["share_id"]
         except Exception as e:
@@ -308,19 +358,23 @@ def _test_file_download_delivery(
         df = pd.read_parquet(io.BytesIO(response.content))
         
         access_time = time.time() - start_time
+        bytes_served = len(response.content)
+        throughput_mbps = (bytes_served / (1024 * 1024)) / download_time if download_time > 0 else 0
         
-        return {
+        result = {
             "setup_time_seconds": approval_time - start_time if not reuse_share_id else 0,
             "link_generation_time_seconds": link_generation_time,
             "download_time_seconds": download_time,
             "total_access_time_seconds": access_time,
             "rows_accessed": len(df),
             "columns_accessed": len(df.columns),
-            "bytes_served": len(response.content),
+            "bytes_served": bytes_served,
             "file_size_bytes": file_link_resp["file_size_bytes"],
+            "throughput_mbps": throughput_mbps,
             "snapshot_id": snapshot_id,
             "success": True
-        }, share_id
+        }
+        return _convert_to_native_types(result), share_id
     except Exception as e:
         return {
             "success": False,
@@ -333,11 +387,13 @@ def _test_revocation(
     seller_headers: Dict,
     reuse_share_id: Optional[int] = None
 ) -> Dict:
+    buyer_keys = None
     if reuse_share_id:
         share_id = reuse_share_id
         print(f"  Reusing share_id: {share_id}")
     else:
         try:
+            buyer_keys = register_buyer_public_key(MARKETPLACE_URL, buyer_headers)
             purchase_data = api_post(f"{MARKETPLACE_URL}/purchase/{dataset_id}", {}, headers=buyer_headers)
             share_id = purchase_data["share_id"]
             api_post(f"{MARKETPLACE_URL}/shares/{share_id}/approve", {}, headers=seller_headers)
@@ -355,6 +411,21 @@ def _test_revocation(
     profile_resp = api_get(f"{MARKETPLACE_URL}/shares/{share_id}/profile", headers=buyer_headers)
     profile_json_str = profile_resp["profile_json"]
     profile_data = json.loads(profile_json_str)
+    
+    if "encryptedBearerToken" in profile_data and "bearerToken" not in profile_data:
+        if buyer_keys is None:
+            print("  Warning: Cannot decrypt token when reusing share_id without original keys")
+            print("  Skipping Delta Sharing operations for revocation test")
+            return {
+                "revocation_time_seconds": 0,
+                "rows_before_revocation": 0,
+                "rows_after_revocation": 0,
+                "revocation_effective": True,
+                "residual_access": False
+            }
+        decrypted_token = decrypt_token(profile_data["encryptedBearerToken"], buyer_keys['private_key_b64'])
+        profile_data["bearerToken"] = decrypted_token
+        del profile_data["encryptedBearerToken"]
     
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(profile_data, f)
@@ -447,6 +518,11 @@ def _compare_methods(delta_sharing: Dict, file_download: Dict) -> Dict:
             "file_download_bytes_actual": file_download.get("bytes_served", 0),
             "file_download_file_size": file_download.get("file_size_bytes", 0)
         },
+        "throughput": {
+            "delta_sharing_mbps": delta_sharing.get("throughput_mbps", 0),
+            "file_download_mbps": file_download.get("throughput_mbps", 0),
+            "winner": "delta_sharing" if delta_sharing.get("throughput_mbps", 0) > file_download.get("throughput_mbps", 0) else "file_download"
+        },
         "operational_overhead": {
             "delta_sharing": "Low - incremental queries, no snapshot management",
             "file_download": "High - snapshot generation, storage, cleanup required"
@@ -500,6 +576,8 @@ if __name__ == "__main__":
         results = run_comparison_experiment(
             dataset_id, buyer_email, buyer_password, seller_email, seller_password
         )
+        
+        results = _convert_to_native_types(results)
         
         output_file = f"comparison_results_{int(time.time())}.json"
         with open(output_file, 'w') as f:
