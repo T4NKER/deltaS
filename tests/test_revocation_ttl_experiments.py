@@ -5,9 +5,14 @@ import time
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from pathlib import Path
 from delta_sharing import load_as_pandas
 from delta_sharing.protocol import DeltaSharingProfile
 import tempfile
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from tests.utils import api_post, api_get, api_delete
 
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")

@@ -87,16 +87,16 @@ def _create_test_dataset(seller_headers: Dict, seller_id: int, table_path: str =
             use_existing = False
     
     if not use_existing:
-    test_data = pd.DataFrame({
-        'id': range(1, 101),
-        'name': [f'Item_{i}' for i in range(1, 101)],
-        'value': [i * 10.5 for i in range(1, 101)],
-        'category': ['A', 'B', 'C'] * 33 + ['A'],
-        'timestamp': pd.date_range('2024-01-01', periods=100, freq='1H')
-    })
-    
-    table = pa.Table.from_pandas(test_data)
-    write_deltalake(full_path, table, storage_options=storage_options, mode='overwrite')
+        test_data = pd.DataFrame({
+            'id': range(1, 101),
+            'name': [f'Item_{i}' for i in range(1, 101)],
+            'value': [i * 10.5 for i in range(1, 101)],
+            'category': ['A', 'B', 'C'] * 33 + ['A'],
+            'timestamp': pd.date_range('2024-01-01', periods=100, freq='1H')
+        })
+        
+        table = pa.Table.from_pandas(test_data)
+        write_deltalake(full_path, table, storage_options=storage_options, mode='overwrite')
     
     seller_server_url = DELTA_SHARING_SERVER_URL.rstrip('/')
     metadata_resp = requests.post(

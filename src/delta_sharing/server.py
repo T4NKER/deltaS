@@ -37,6 +37,8 @@ from src.utils.delta_sharing_utils import (
 )
 from src.utils.predicate_parser import parse_query_predicates
 from src.utils.data_utils import parse_anchor_columns
+from src.marketplace.auth import create_access_token
+from src.seller.fingerprinting import generate_buyer_fingerprint, verify_fingerprint
 
 DEFAULT_TRIAL_ROW_LIMIT = 100
 DEFAULT_SYNTHETIC_DP_EPSILON = 0.1
@@ -829,6 +831,69 @@ async def encrypt_share_token(
         "token_hash": token_hash
     }
 
+@app.post("/seller/detect-fingerprint")
+async def detect_fingerprint(
+    request: Request,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can detect fingerprints")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    body = await request.json()
+    suspicious_data = body.get("data")
+    anchor_columns = body.get("anchor_columns", [])
+    
+    if not suspicious_data:
+        raise HTTPException(status_code=400, detail="data field required")
+    
+    try:
+        df = pd.DataFrame(suspicious_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid data format: {str(e)}")
+    
+    shares = db.query(Share).filter(
+        Share.seller_id == user_id,
+        Share.revoked == False,
+        Share.approval_status == "approved"
+    ).all()
+    
+    matches = []
+    for share in shares:
+        try:
+            fingerprint = generate_buyer_fingerprint(share.buyer_id, share.id)
+            
+            if not anchor_columns:
+                dataset = db.query(Dataset).filter(Dataset.id == share.dataset_id).first()
+                if dataset and dataset.anchor_columns:
+                    anchor_columns = parse_anchor_columns(dataset.anchor_columns)
+            
+            if anchor_columns:
+                result = verify_fingerprint(df, fingerprint, anchor_columns)
+                if result.get("found"):
+                    matches.append({
+                        "share_id": share.id,
+                        "buyer_id": share.buyer_id,
+                        "match_rate": result.get("overall_match_rate", 0.0),
+                        "details": result
+                    })
+        except Exception as e:
+            continue
+    
+    return {
+        "matches_found": len(matches) > 0,
+        "matches": matches
+    }
+
 @app.delete("/seller/file-download/{snapshot_id}")
 async def revoke_file_download(
     snapshot_id: str,
@@ -859,6 +924,96 @@ async def revoke_file_download(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to revoke file download: {str(e)}"
+        )
+
+@app.post("/seller/auth-token")
+async def generate_seller_auth_token(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    body = await request.json()
+    marketplace_token = body.get("marketplace_token")
+    
+    if not marketplace_token:
+        raise HTTPException(status_code=400, detail="marketplace_token required")
+    
+    try:
+        settings = get_settings()
+        payload = jwt.decode(marketplace_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        seller_id = int(payload.get("sub"))
+        
+        seller = db.query(User).filter(User.id == seller_id).first()
+        if not seller or seller.role != "seller":
+            raise HTTPException(status_code=403, detail="Invalid seller")
+        
+        seller_token = create_access_token({"sub": str(seller.id), "role": "seller"})
+        return {"seller_token": seller_token, "seller_id": seller.id}
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid marketplace token")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate seller token: {str(e)}")
+
+@app.post("/seller/cleanup-watermarked-table")
+async def cleanup_watermarked_table(
+    request: Request,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    token = extract_token_from_header(authorization)
+    
+    try:
+        settings = get_settings()
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or user.role != "seller":
+            raise HTTPException(status_code=403, detail="Only sellers can cleanup tables")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
+    
+    body = await request.json()
+    watermarked_table_path = body.get("watermarked_table_path")
+    
+    if not watermarked_table_path:
+        raise HTTPException(status_code=400, detail="watermarked_table_path required")
+    
+    try:
+        s3_client = get_s3_client()
+        bucket_name = get_bucket_name()
+        
+        full_path = get_full_s3_path(bucket_name, watermarked_table_path)
+        storage_options = get_delta_storage_options()
+        
+        try:
+            delta_table = DeltaTable(full_path, storage_options=storage_options)
+            
+            for file_info in delta_table.files():
+                if 'path' in file_info:
+                    file_key = file_info['path']
+                    if not file_key.startswith('/'):
+                        file_key = f"{watermarked_table_path}/{file_key}"
+                    try:
+                        s3_client.delete_object(Bucket=bucket_name, Key=file_key)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        
+        prefix = f"{watermarked_table_path}/"
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    try:
+                        s3_client.delete_object(Bucket=bucket_name, Key=obj['Key'])
+                    except Exception:
+                        pass
+        
+        return {"status": "success", "message": f"Watermarked table {watermarked_table_path} cleaned up"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to cleanup watermarked table: {str(e)}"
         )
 
 @app.get("/health")

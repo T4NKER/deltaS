@@ -303,10 +303,18 @@ async def purchase_dataset(
             
             if seller and seller.delta_sharing_server_url:
                 try:
-                    seller_token = create_access_token({"sub": str(seller.id)})
-                    seller_headers = {"Authorization": f"Bearer {seller_token}"}
-                    
+                    marketplace_token = create_access_token({"sub": str(current_user.id)})
                     seller_url = _fix_seller_url_for_docker(seller.delta_sharing_server_url.rstrip('/'))
+                    
+                    auth_response = requests.post(
+                        f"{seller_url}/seller/auth-token",
+                        json={"marketplace_token": marketplace_token},
+                        timeout=HTTP_REQUEST_TIMEOUT
+                    )
+                    auth_response.raise_for_status()
+                    auth_data = auth_response.json()
+                    seller_token = auth_data["seller_token"]
+                    seller_headers = {"Authorization": f"Bearer {seller_token}"}
                     
                     encrypt_response = requests.post(
                         f"{seller_url}/seller/encrypt-token",
@@ -424,11 +432,19 @@ async def request_trial(
     seller = db.query(User).filter(User.id == dataset.seller_id).first()
     if seller and seller.delta_sharing_server_url:
         try:
-            seller_token = create_access_token({"sub": str(seller.id)})
-            seller_headers = {"Authorization": f"Bearer {seller_token}"}
-            
+            marketplace_token = create_access_token({"sub": str(current_user.id)})
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             seller_url = _fix_seller_url_for_docker(seller_url)
+            
+            auth_response = requests.post(
+                f"{seller_url}/seller/auth-token",
+                json={"marketplace_token": marketplace_token},
+                timeout=HTTP_REQUEST_TIMEOUT
+            )
+            auth_response.raise_for_status()
+            auth_data = auth_response.json()
+            seller_token = auth_data["seller_token"]
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -552,11 +568,19 @@ async def rotate_share_token(
     seller = db.query(User).filter(User.id == share.seller_id).first()
     if seller and seller.delta_sharing_server_url:
         try:
-            seller_token = create_access_token({"sub": str(seller.id)})
-            seller_headers = {"Authorization": f"Bearer {seller_token}"}
-            
+            marketplace_token = create_access_token({"sub": str(current_user.id)})
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             seller_url = _fix_seller_url_for_docker(seller_url)
+            
+            auth_response = requests.post(
+                f"{seller_url}/seller/auth-token",
+                json={"marketplace_token": marketplace_token},
+                timeout=HTTP_REQUEST_TIMEOUT
+            )
+            auth_response.raise_for_status()
+            auth_data = auth_response.json()
+            seller_token = auth_data["seller_token"]
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -618,6 +642,36 @@ async def revoke_share(
     share.revoked = True
     share.revoked_at = datetime.utcnow()
     share.profile_json = None
+    
+    seller = db.query(User).filter(User.id == share.seller_id).first()
+    if seller and seller.delta_sharing_server_url and share.watermarked_table_path:
+        try:
+            marketplace_token = create_access_token({"sub": str(current_user.id)})
+            seller_url = seller.delta_sharing_server_url.rstrip('/')
+            seller_url = _fix_seller_url_for_docker(seller_url)
+            
+            auth_response = requests.post(
+                f"{seller_url}/seller/auth-token",
+                json={"marketplace_token": marketplace_token},
+                timeout=HTTP_REQUEST_TIMEOUT
+            )
+            auth_response.raise_for_status()
+            auth_data = auth_response.json()
+            seller_token = auth_data["seller_token"]
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
+            
+            cleanup_response = requests.post(
+                f"{seller_url}/seller/cleanup-watermarked-table",
+                json={"watermarked_table_path": share.watermarked_table_path},
+                headers=seller_headers,
+                timeout=HTTP_REQUEST_TIMEOUT
+            )
+            cleanup_response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"Warning: Failed to cleanup watermarked table on revocation: {e}")
+        except Exception as e:
+            print(f"Warning: Error during watermarked table cleanup: {e}")
+    
     try:
         db.commit()
     except Exception as e:
@@ -662,11 +716,19 @@ async def approve_share(
     seller = db.query(User).filter(User.id == share.seller_id).first()
     if seller and seller.delta_sharing_server_url:
         try:
-            seller_token = create_access_token({"sub": str(seller.id)})
-            seller_headers = {"Authorization": f"Bearer {seller_token}"}
-            
+            marketplace_token = create_access_token({"sub": str(current_user.id)})
             seller_url = seller.delta_sharing_server_url.rstrip('/')
             seller_url = _fix_seller_url_for_docker(seller_url)
+            
+            auth_response = requests.post(
+                f"{seller_url}/seller/auth-token",
+                json={"marketplace_token": marketplace_token},
+                timeout=HTTP_REQUEST_TIMEOUT
+            )
+            auth_response.raise_for_status()
+            auth_data = auth_response.json()
+            seller_token = auth_data["seller_token"]
+            seller_headers = {"Authorization": f"Bearer {seller_token}"}
             
             encrypt_response = requests.post(
                 f"{seller_url}/seller/encrypt-token",
@@ -777,11 +839,19 @@ async def get_share_profile(
         
         try:
             if not share.encrypted_token:
-                seller_token = create_access_token({"sub": str(seller.id)})
-                seller_headers = {"Authorization": f"Bearer {seller_token}"}
-                
+                marketplace_token = create_access_token({"sub": str(current_user.id)})
                 seller_url = seller.delta_sharing_server_url.rstrip('/')
                 seller_url = _fix_seller_url_for_docker(seller_url)
+                
+                auth_response = requests.post(
+                    f"{seller_url}/seller/auth-token",
+                    json={"marketplace_token": marketplace_token},
+                    timeout=HTTP_REQUEST_TIMEOUT
+                )
+                auth_response.raise_for_status()
+                auth_data = auth_response.json()
+                seller_token = auth_data["seller_token"]
+                seller_headers = {"Authorization": f"Bearer {seller_token}"}
                 
                 encrypt_response = requests.post(
                     f"{seller_url}/seller/encrypt-token",
@@ -918,11 +988,20 @@ async def request_file_download(
         )
     
     try:
-        seller_token = create_access_token({"sub": str(seller.id)})
-        seller_headers = {"Authorization": f"Bearer {seller_token}"}
-        
+        marketplace_token = create_access_token({"sub": str(current_user.id)})
         seller_url = seller.delta_sharing_server_url.rstrip('/')
         seller_url = _fix_seller_url_for_docker(seller_url)
+        
+        auth_response = requests.post(
+            f"{seller_url}/seller/auth-token",
+            json={"marketplace_token": marketplace_token},
+            timeout=HTTP_REQUEST_TIMEOUT
+        )
+        auth_response.raise_for_status()
+        auth_data = auth_response.json()
+        seller_token = auth_data["seller_token"]
+        seller_headers = {"Authorization": f"Bearer {seller_token}"}
+        
         response = requests.post(
             f"{seller_url}/seller/file-download/{share_id}",
             json={"expiry_hours": request.expiry_hours},
@@ -965,11 +1044,20 @@ async def revoke_file_download(
         )
     
     try:
-        seller_token = create_access_token({"sub": str(seller.id)})
-        seller_headers = {"Authorization": f"Bearer {seller_token}"}
-        
+        marketplace_token = create_access_token({"sub": str(current_user.id)})
         seller_url = seller.delta_sharing_server_url.rstrip('/')
         seller_url = _fix_seller_url_for_docker(seller_url)
+        
+        auth_response = requests.post(
+            f"{seller_url}/seller/auth-token",
+            json={"marketplace_token": marketplace_token},
+            timeout=HTTP_REQUEST_TIMEOUT
+        )
+        auth_response.raise_for_status()
+        auth_data = auth_response.json()
+        seller_token = auth_data["seller_token"]
+        seller_headers = {"Authorization": f"Bearer {seller_token}"}
+        
         response = requests.delete(
             f"{seller_url}/seller/file-download/{snapshot_id}",
             headers=seller_headers,

@@ -141,18 +141,23 @@ def _generate_simple_synthetic_column(series: pd.Series, col_type: str, num_rows
         synthetic = np.random.choice(unique_vals, num_rows, replace=True)
         return pd.Series(synthetic)
 
+def _calculate_l1_sensitivity(series: pd.Series) -> float:
+    if len(series) == 0:
+        return 1.0
+    min_val = float(series.min())
+    max_val = float(series.max())
+    return max(abs(max_val - min_val), 1.0)
+
 def _generate_dp_column(series: pd.Series, col_type: str, num_rows: int, epsilon: float) -> pd.Series:
     non_null_series = series.dropna()
     
     if len(non_null_series) == 0:
         return pd.Series([None] * num_rows)
     
-    sensitivity = 1.0
-    noise_scale = sensitivity / epsilon if epsilon > 0 else float('inf')
-    
     if pd.api.types.is_integer_dtype(series):
+        sensitivity = _calculate_l1_sensitivity(non_null_series)
+        noise_scale = sensitivity / epsilon if epsilon > 0 else float('inf')
         mean_val = float(non_null_series.mean())
-        std_val = float(non_null_series.std()) if len(non_null_series) > 1 else 1.0
         
         laplace_noise = np.random.laplace(0, noise_scale, num_rows)
         synthetic = (mean_val + laplace_noise).astype(int)
@@ -164,8 +169,9 @@ def _generate_dp_column(series: pd.Series, col_type: str, num_rows: int, epsilon
         return pd.Series(synthetic)
     
     elif pd.api.types.is_float_dtype(series):
+        sensitivity = _calculate_l1_sensitivity(non_null_series)
+        noise_scale = sensitivity / epsilon if epsilon > 0 else float('inf')
         mean_val = float(non_null_series.mean())
-        std_val = float(non_null_series.std()) if len(non_null_series) > 1 else 1.0
         
         laplace_noise = np.random.laplace(0, noise_scale, num_rows)
         synthetic = mean_val + laplace_noise
@@ -177,8 +183,12 @@ def _generate_dp_column(series: pd.Series, col_type: str, num_rows: int, epsilon
         return pd.Series(synthetic)
     
     elif pd.api.types.is_datetime64_any_dtype(series):
-        mean_timestamp = non_null_series.astype('int64').mean()
-        laplace_noise = np.random.laplace(0, noise_scale * 86400000000000, num_rows)
+        timestamps_ns = non_null_series.astype('int64')
+        sensitivity = _calculate_l1_sensitivity(timestamps_ns)
+        noise_scale = sensitivity / epsilon if epsilon > 0 else float('inf')
+        mean_timestamp = float(timestamps_ns.mean())
+        
+        laplace_noise = np.random.laplace(0, noise_scale, num_rows)
         synthetic_timestamps = (mean_timestamp + laplace_noise).astype('int64')
         synthetic = pd.to_datetime(synthetic_timestamps)
         

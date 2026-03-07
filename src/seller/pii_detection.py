@@ -38,31 +38,16 @@ def detect_pii_in_column(series: pd.Series, column_name: str) -> Dict[str, int]:
     column_lower = column_name.lower()
     series_str = series.astype(str)
     
-    if 'email' in column_lower or 'mail' in column_lower:
-        matches = series_str.str.contains(PII_PATTERNS['email'], na=False, regex=True)
-        detected['email'] = matches.sum()
+    for pii_type, pattern in PII_PATTERNS.items():
+        matches = series_str.str.contains(pattern, na=False, regex=True)
+        count = matches.sum()
+        if count > 0:
+            detected[pii_type] = count
     
     if 'phone' in column_lower or 'tel' in column_lower:
-        detected['phone'] = detect_phone_numbers(series)
-    
-    if 'ssn' in column_lower or 'social' in column_lower:
-        matches = series_str.str.contains(PII_PATTERNS['ssn'], na=False, regex=True)
-        detected['ssn'] = matches.sum()
-    
-    if 'card' in column_lower or 'credit' in column_lower:
-        matches = series_str.str.contains(PII_PATTERNS['credit_card'], na=False, regex=True)
-        detected['credit_card'] = matches.sum()
-    
-    if 'ip' in column_lower:
-        matches = series_str.str.contains(PII_PATTERNS['ip_address'], na=False, regex=True)
-        detected['ip_address'] = matches.sum()
-    
-    for pii_type, pattern in PII_PATTERNS.items():
-        if pii_type not in detected:
-            matches = series_str.str.contains(pattern, na=False, regex=True)
-            count = matches.sum()
-            if count > 0:
-                detected[pii_type] = count
+        phone_count = detect_phone_numbers(series)
+        if phone_count > 0:
+            detected['phone'] = phone_count
     
     return detected
 
