@@ -301,10 +301,25 @@ def test_full_blind_workflow():
         table_url = f"{profile_path}#{share.name}.{schema.name}.{table.name}"
         df = load_as_pandas(table_url)
         
-        assert len(df) == 3
-        assert list(df.columns) == ['id', 'name', 'value']
+        assert len(df) >= 3
+        assert 'id' in df.columns and 'name' in df.columns and 'value' in df.columns
+        
+        original_names = ['Alice', 'Bob', 'Charlie']
+        rows_with_original_names = df[df['name'].isin(original_names)]
+        
+        unique_names_in_data = set(rows_with_original_names['name'].values)
+        assert unique_names_in_data == set(original_names), f"Expected all 3 original names but found: {unique_names_in_data}. All names in dataframe: {df['name'].unique().tolist()}"
+        
+        assert len(rows_with_original_names) >= 3, f"Expected at least 3 rows with original names (3 originals + possibly pseudorows) but found {len(rows_with_original_names)}"
+        
+        original_rows = rows_with_original_names.drop_duplicates(subset=['name'], keep='first')
+        assert len(original_rows) == 3, f"Expected 3 unique original rows but found {len(original_rows)}"
+        assert set(original_rows['name'].values) == set(original_names)
         print("[OK] Buyer successfully read data directly from seller")
-        print(f"  Rows: {len(df)}")
+        print(f"  Total rows: {len(df)} (including watermarked pseudorows)")
+        print(f"  Rows with original names: {len(rows_with_original_names)}")
+        print(f"  Unique original rows: {len(original_rows)}")
+        print(f"  Original names: {set(original_rows['name'].values)}")
         print(f"  Columns: {list(df.columns)}")
     finally:
         if os.path.exists(profile_path):

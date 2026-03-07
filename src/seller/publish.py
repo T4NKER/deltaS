@@ -5,28 +5,12 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 import pandas as pd
 import pyarrow as pa
-import numpy as np
 from deltalake import DeltaTable
 from src.seller.pii_detection import analyze_dataset_for_pii
 from src.seller.watermarking import detect_anchor_columns_from_schema
 from src.utils.s3_utils import get_delta_storage_options, get_full_s3_path, get_bucket_name
 from src.utils.settings import get_settings
-
-def _convert_to_native_types(obj: Any) -> Any:
-    if isinstance(obj, (np.integer, np.int64, np.int32)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, np.float64, np.float32)):
-        return float(obj)
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    elif isinstance(obj, dict):
-        return {k: _convert_to_native_types(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_convert_to_native_types(item) for item in obj]
-    elif isinstance(obj, set):
-        return {_convert_to_native_types(item) for item in obj}
-    else:
-        return obj
+from src.utils.data_utils import convert_to_native_types
 
 def generate_metadata_signature(metadata_dict: Dict[str, Any], seller_id: int) -> str:
     settings = get_settings()
@@ -115,7 +99,7 @@ def publish_dataset_metadata(
         "published_at": datetime.now(timezone.utc).isoformat()
     }
     
-    metadata = _convert_to_native_types(metadata)
+    metadata = convert_to_native_types(metadata)
     
     signature = generate_metadata_signature(metadata, seller_id)
     metadata["signature"] = signature

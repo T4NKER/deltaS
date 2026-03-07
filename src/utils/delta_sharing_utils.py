@@ -84,10 +84,7 @@ def cleanup_old_watermarked_files(s3_client, bucket: str, prefix: str, max_age_h
                 for obj in page['Contents']:
                     if obj['Key'].startswith(prefix) and obj['Key'].endswith('.parquet'):
                         if obj['LastModified'].replace(tzinfo=None) < cutoff_time:
-                            try:
-                                s3_client.delete_object(Bucket=bucket, Key=obj['Key'])
-                            except Exception:
-                                pass
+                            s3_client.delete_object(Bucket=bucket, Key=obj['Key'])
     except Exception:
         pass
 
@@ -95,11 +92,8 @@ def get_share_from_token(token: str, db: Session) -> Share:
     matching_share = db.query(Share).filter(Share.token == token).first()
     
     if not matching_share:
-        try:
-            computed_hash = hash_token(token)
-            matching_share = db.query(Share).filter(Share.token_hash == computed_hash).first()
-        except Exception:
-            pass
+        computed_hash = hash_token(token)
+        matching_share = db.query(Share).filter(Share.token_hash == computed_hash).first()
     
     if not matching_share:
         raise HTTPException(status_code=401, detail="Invalid share token")

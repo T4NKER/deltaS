@@ -17,6 +17,8 @@ except ImportError:
     check_watermark = None
     extract_list_items = None
 
+from src.utils.data_utils import parse_anchor_columns
+
 MARKETPLACE_URL = os.getenv("MARKETPLACE_URL", "http://localhost:8000")
 DELTA_SHARING_SERVER_URL = os.getenv("DELTA_SHARING_SERVER_URL", "http://localhost:8080")
 
@@ -225,9 +227,7 @@ def main():
                 print(f"Query failed: {result['error']}")
         
         elif args.command == 'verify':
-            anchor_cols = None
-            if args.anchor_columns:
-                anchor_cols = [col.strip() for col in args.anchor_columns.split(',')]
+            anchor_cols = parse_anchor_columns(args.anchor_columns) if args.anchor_columns else None
             result = verify_watermark(
                 args.profile, args.share, args.schema, args.table,
                 args.buyer_id, args.share_id, anchor_cols

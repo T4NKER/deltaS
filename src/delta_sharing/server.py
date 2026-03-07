@@ -36,6 +36,7 @@ from src.utils.delta_sharing_utils import (
     cleanup_old_watermarked_files, get_share_from_token
 )
 from src.utils.predicate_parser import parse_query_predicates
+from src.utils.data_utils import parse_anchor_columns
 
 DEFAULT_TRIAL_ROW_LIMIT = 100
 DEFAULT_SYNTHETIC_DP_EPSILON = 0.1
@@ -207,6 +208,7 @@ async def query_table(
     requested_limit = body.get("limit")
     
     effective_limit = None
+    read_limit = None
     if share.is_trial and share.trial_row_limit:
         if requested_limit:
             effective_limit = min(requested_limit, share.trial_row_limit)
@@ -214,6 +216,12 @@ async def query_table(
             effective_limit = share.trial_row_limit
     elif requested_limit:
         effective_limit = requested_limit
+    
+    if effective_limit:
+        expected_pseudorows = max(1, effective_limit // 20)
+        read_limit = max(1, effective_limit - expected_pseudorows)
+    else:
+        read_limit = None
     
     watermark = generate_watermark(share.buyer_id, share.id)
     
@@ -263,7 +271,7 @@ async def query_table(
         if not dataset.anchor_columns:
             raise HTTPException(status_code=500, detail="Dataset anchor_columns not configured. Anchor columns must be set at dataset creation time.")
         
-        anchor_columns_list = [col.strip() for col in dataset.anchor_columns.split(',') if col.strip()]
+        anchor_columns_list = parse_anchor_columns(dataset.anchor_columns)
         anchor_columns_list = [col for col in anchor_columns_list if col in schema_col_names]
         if not anchor_columns_list:
             raise HTTPException(status_code=500, detail="Configured anchor columns not found in table schema")
@@ -316,20 +324,22 @@ async def query_table(
         record_batches = []
         rows_scanned = 0
         
+        limit_to_use = read_limit if read_limit is not None else effective_limit
+        
         for batch in scanner.to_batches():
-            if effective_limit and rows_scanned >= effective_limit:
+            if limit_to_use and rows_scanned >= limit_to_use:
                 break
             
             batch_size = len(batch)
-            if effective_limit:
-                remaining = effective_limit - rows_scanned
+            if limit_to_use:
+                remaining = limit_to_use - rows_scanned
                 if remaining < batch_size:
                     batch = batch.slice(0, remaining)
             
             record_batches.append(batch)
             rows_scanned += len(batch)
             
-            if effective_limit and rows_scanned >= effective_limit:
+            if limit_to_use and rows_scanned >= limit_to_use:
                 break
         
         if not record_batches:
@@ -358,6 +368,9 @@ async def query_table(
         effective_anchor_columns = available_anchor_cols if available_anchor_cols else None
         
         watermarked_df = apply_watermark_to_dataframe(df, watermark, is_trial=share.is_trial, anchor_columns=effective_anchor_columns)
+        
+        if effective_limit and len(watermarked_df) > effective_limit:
+            watermarked_df = watermarked_df.head(effective_limit)
         
         if requested_columns_set:
             columns_to_return = list(requested_columns_set)
@@ -612,9 +625,7 @@ async def publish_metadata(
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid authentication: {str(e)}")
     
-    anchor_cols_list = None
-    if request_data.anchor_columns:
-        anchor_cols_list = [col.strip() for col in request_data.anchor_columns.split(',') if col.strip()]
+    anchor_cols_list = parse_anchor_columns(request_data.anchor_columns) if request_data.anchor_columns else None
     
     try:
         metadata = publish_dataset_metadata(

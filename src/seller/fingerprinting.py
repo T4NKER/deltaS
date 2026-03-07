@@ -4,13 +4,19 @@ import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
-from src.seller.watermarking import generate_watermark, compute_row_anchor, normalize_value_for_anchor
+from src.seller.watermarking import generate_watermark, compute_row_anchor
+from src.utils.data_utils import normalize_value_for_anchor
 from src.utils.settings import get_settings
+
+WATERMARK_BYTE_MULTIPLIER = 12500
+WATERMARK_SEED_MOD = 10000
+MICROSECONDS_PER_SECOND = 1000000
+FLOAT_PRECISION_PLACE = 5
 
 def generate_buyer_fingerprint(buyer_id: int, share_id: int, redundancy: int = 3) -> Dict:
     settings = get_settings()
     secret = settings.get_watermark_secret_bytes()
-    if not secret or not isinstance(secret, bytes):
+    if not isinstance(secret, bytes):
         raise ValueError("Watermark secret must be bytes")
     
     base_message = f"{buyer_id}:{share_id}".encode('utf-8')
@@ -19,7 +25,7 @@ def generate_buyer_fingerprint(buyer_id: int, share_id: int, redundancy: int = 3
     fingerprint = {
         "buyer_id": buyer_id,
         "share_id": share_id,
-        "base_hash": base_hmac[:32],
+        "base_hash": (base_hmac[:32] or "0" * 32).ljust(32, '0'),
         "redundancy": redundancy,
         "components": []
     }
@@ -102,10 +108,11 @@ def _embed_fingerprint_in_timestamp(
     combined_seed = (base_hash_int + row_anchor) % (2**32)
     
     np.random.seed(combined_seed)
-    watermark_bytes = [int(fingerprint["base_hash"][i:i+2], 16) for i in range(0, min(8, len(fingerprint["base_hash"])), 2)]
+    base_hash = (fingerprint["base_hash"] or "0" * 32)[:32].ljust(32, '0')
+    watermark_bytes = [int(base_hash[i:i+2], 16) for i in range(0, 8, 2)]
     watermark_byte = watermark_bytes[row_anchor % len(watermark_bytes)]
     
-    target_microseconds = (watermark_byte * 12500 + combined_seed % 10000) % 1000000
+    target_microseconds = (watermark_byte * WATERMARK_BYTE_MULTIPLIER + combined_seed % WATERMARK_SEED_MOD) % MICROSECONDS_PER_SECOND
     
     current_microseconds = timestamp_value.microsecond
     new_microseconds = (current_microseconds // 10000) * 10000 + target_microseconds
@@ -124,20 +131,27 @@ def _embed_fingerprint_in_numeric(
     
     result = series.copy()
     
+    component_hash_int = int(component["hash"][:8], 16)
+    
     for idx in series.index:
         row = full_df.loc[idx]
         row_anchor = compute_row_anchor(row, anchor_columns=anchor_columns)
         
-        component_hash_int = int(component["hash"][:8], 16)
-        combined_seed = (component_hash_int + row_anchor) % (2**32)
-        np.random.seed(combined_seed)
-        
         if pd.api.types.is_integer_dtype(series):
-            lsb_mod = component_hash_int % 10
-            result.iloc[idx] = (int(result.iloc[idx]) // 10) * 10 + lsb_mod
+            slot_value = (row_anchor ^ component_hash_int) % 10
+            result.iloc[idx] = (int(result.iloc[idx]) // 10) * 10 + slot_value
         elif pd.api.types.is_float_dtype(series):
-            noise = (component_hash_int % 100) / 10000.0
-            result.iloc[idx] = float(result.iloc[idx]) + noise
+            combined_seed = ((row_anchor ^ component_hash_int) % (2**32))
+            np.random.seed(int(combined_seed))
+            original_val = float(result.iloc[idx])
+            original_str = f"{original_val:.10f}"
+            if '.' in original_str:
+                parts = original_str.split('.')
+                if len(parts[1]) > FLOAT_PRECISION_PLACE:
+                    decimal_part = parts[1]
+                    bit_value = (component_hash_int >> (idx % 32)) & 1
+                    new_decimal = decimal_part[:FLOAT_PRECISION_PLACE] + str(bit_value) + decimal_part[FLOAT_PRECISION_PLACE+1:]
+                    result.iloc[idx] = float(parts[0] + '.' + new_decimal)
     
     return result
 
@@ -174,15 +188,16 @@ def verify_fingerprint(
             base_hash_int = int(fingerprint["base_hash"][:8], 16)
             combined_seed = (base_hash_int + row_anchor) % (2**32)
             
-            watermark_bytes = [int(fingerprint["base_hash"][i:i+2], 16) for i in range(0, min(8, len(fingerprint["base_hash"])), 2)]
+            base_hash = (fingerprint["base_hash"] or "0" * 32)[:32].ljust(32, '0')
+            watermark_bytes = [int(base_hash[i:i+2], 16) for i in range(0, 8, 2)]
             watermark_byte = watermark_bytes[row_anchor % len(watermark_bytes)]
-            expected_microseconds = (watermark_byte * 12500 + combined_seed % 10000) % 1000000
+            expected_microseconds = (watermark_byte * WATERMARK_BYTE_MULTIPLIER + combined_seed % WATERMARK_SEED_MOD) % MICROSECONDS_PER_SECOND
             
             for col in timestamp_cols:
                 if pd.notna(row[col]):
                     actual_microseconds = row[col].microsecond
                     diff = abs(actual_microseconds - expected_microseconds)
-                    if diff < 1000 or abs(diff - 1000000) < 1000:
+                    if diff < 1000 or abs(diff - MICROSECONDS_PER_SECOND) < 1000:
                         timestamp_matches += 1
                         break
         

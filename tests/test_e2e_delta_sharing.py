@@ -36,6 +36,7 @@ def test_e2e_delta_sharing():
     os.environ.setdefault('S3_SECRET_KEY', 'test')
     os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
     os.environ.setdefault('S3_REGION', 'us-east-1')
+    os.environ.setdefault('ALLOW_INSECURE_DEFAULTS', 'true')
     
     try:
         response = requests.get("http://localhost:4566/_localstack/health", timeout=2)
@@ -278,6 +279,14 @@ def test_e2e_delta_sharing():
                 for sample in ts.get('samples', [])[:3]:
                     print(f"      {sample}")
         
+        if result.get('numeric', {}).get('checked', 0) > 0:
+            num = result['numeric']
+            print(f"  Numeric watermark: {num['matches']}/{num['checked']} matches ({num['match_rate']:.1f}%)")
+            if num['found']:
+                print(f"    [OK] Numeric watermark detected")
+                for sample in num.get('samples', [])[:3]:
+                    print(f"      {sample}")
+        
         if result["found"]:
             print(f"  [OK] SUCCESS: Watermarking is working correctly!")
         else:
@@ -318,10 +327,13 @@ def test_e2e_delta_sharing():
         if result["found"]:
             wc = result.get('watermark_column', {})
             ts = result.get('timestamp', {})
+            num = result.get('numeric', {})
             if wc.get('found'):
                 print(f"  [OK] Watermark column still present: {wc['matches']}/{wc['checked']} matches ({wc['match_rate']:.1f}%)")
             if ts.get('found'):
                 print(f"  [OK] Timestamp watermark still present: {ts['matches']}/{ts['checked']} matches ({ts['match_rate']:.1f}%)")
+            if num.get('found'):
+                print(f"  [OK] Numeric watermark still present: {num['matches']}/{num['checked']} matches ({num['match_rate']:.1f}%)")
         else:
             print(f"  [WARN] WARNING: Watermark not detected in final query: {result.get('reason', 'Unknown reason')}")
         
@@ -381,6 +393,7 @@ def test_trial_share():
     os.environ.setdefault('S3_SECRET_KEY', 'test')
     os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
     os.environ.setdefault('S3_REGION', 'us-east-1')
+    os.environ.setdefault('ALLOW_INSECURE_DEFAULTS', 'true')
     
     try:
         response = requests.get("http://localhost:4566/_localstack/health", timeout=2)
@@ -592,6 +605,14 @@ def test_trial_share():
                     for sample in ts.get('samples', [])[:3]:
                         print(f"      {sample}")
         
+        if result.get('numeric', {}).get('checked', 0) > 0:
+            num = result['numeric']
+            print(f"  Numeric watermark: {num['matches']}/{num['checked']} matches ({num['match_rate']:.1f}%)")
+            if num['found']:
+                print(f"    [OK] Numeric watermark detected")
+                for sample in num.get('samples', [])[:3]:
+                    print(f"      {sample}")
+        
         if result["found"]:
             print(f"  [OK] SUCCESS: Trial share watermarking is working correctly!")
         else:
@@ -612,10 +633,13 @@ def test_trial_share():
         print(f"  Watermark detected: {result['found']}")
         wc = result.get('watermark_column', {})
         ts = result.get('timestamp', {})
+        num = result.get('numeric', {})
         if wc.get('checked', 0) > 0:
             print(f"  Watermark column match rate: {wc.get('match_rate', 0):.1f}%")
         if ts.get('checked', 0) > 0:
             print(f"  Timestamp match rate: {ts.get('match_rate', 0):.1f}%")
+        if num.get('checked', 0) > 0:
+            print(f"  Numeric match rate: {num.get('match_rate', 0):.1f}%")
         print("="*80)
         
         os.unlink(trial_profile_path)
@@ -640,6 +664,7 @@ def test_phase2_filtering():
     os.environ.setdefault('S3_SECRET_KEY', 'test')
     os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
     os.environ.setdefault('S3_REGION', 'us-east-1')
+    os.environ.setdefault('ALLOW_INSECURE_DEFAULTS', 'true')
     
     try:
         response = requests.get("http://localhost:4566/_localstack/health", timeout=2)
@@ -1107,6 +1132,7 @@ def test_pii_detection_on_write():
     os.environ.setdefault('S3_SECRET_KEY', 'test')
     os.environ.setdefault('S3_BUCKET_NAME', 'test-delta-bucket')
     os.environ.setdefault('S3_REGION', 'us-east-1')
+    os.environ.setdefault('ALLOW_INSECURE_DEFAULTS', 'true')
     
     try:
         response = requests.get("http://localhost:4566/_localstack/health", timeout=2)

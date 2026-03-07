@@ -52,13 +52,19 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
     has_watermark_column = '_watermark_id' in df.columns
     timestamp_cols = detect_timestamp_columns(df)
     
-    if not timestamp_cols and not has_watermark_column:
+    numeric_cols = [col for col in df.columns 
+                   if col != '_watermark_id' 
+                   and col not in timestamp_cols
+                   and (pd.api.types.is_integer_dtype(df[col]) or pd.api.types.is_float_dtype(df[col]))]
+    
+    if not timestamp_cols and not has_watermark_column and not numeric_cols:
         return {
             "found": False,
-            "reason": "No timestamp columns or watermark column found",
+            "reason": "No timestamp columns, watermark column, or numeric columns found",
             "watermark": expected_watermark,
             "timestamp_cols": [],
-            "has_watermark_column": False
+            "has_watermark_column": False,
+            "numeric_cols": []
         }
     
     df_for_anchor = df.drop(columns=['_watermark_id']) if '_watermark_id' in df.columns else df
@@ -90,6 +96,10 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
     timestamp_matches = 0
     timestamp_checked = 0
     timestamp_samples = []
+    
+    numeric_matches = 0
+    numeric_checked = 0
+    numeric_samples = []
     
     row_count = len(df)
     MIN_SAMPLE_SIZE = min(20, max(5, row_count // 4))
@@ -170,8 +180,72 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
                 microseconds = ts.microsecond
                 timestamp_samples.append(f"Row {idx}, {first_col}: microseconds={microseconds} (expected: {expected_microseconds}, diff: {abs(microseconds - expected_microseconds)}) [MISMATCH]")
     
+    watermark_hash_int = int(expected_watermark[:8], 16)
+    
+    for idx, row in df.iterrows():
+        if idx in rows_checked:
+            continue
+        
+        row_for_anchor = row.drop('_watermark_id') if '_watermark_id' in row.index else row
+        try:
+            row_anchor = compute_row_anchor(row_for_anchor, df_for_anchor.dtypes, anchor_columns)
+        except Exception as e:
+            if verbose and numeric_checked < 3:
+                numeric_samples.append(f"Row {idx}: Error computing row anchor - {e}")
+            continue
+        
+        row_matched = False
+        checked_numeric_cols = []
+        
+        for col in numeric_cols:
+            try:
+                if col not in row.index or pd.isna(row[col]):
+                    continue
+                
+                checked_numeric_cols.append(col)
+                
+                if pd.api.types.is_integer_dtype(df[col]):
+                    expected_slot = (row_anchor ^ watermark_hash_int) % 10
+                    actual_value = int(row[col])
+                    actual_slot = actual_value % 10
+                    
+                    if actual_slot == expected_slot:
+                        row_matched = True
+                        if verbose and numeric_matches < 5:
+                            numeric_samples.append(f"Row {idx}, {col}: LSB={actual_slot} (expected: {expected_slot})")
+                        break
+                elif pd.api.types.is_float_dtype(df[col]):
+                    original_val = float(row[col])
+                    original_str = f"{original_val:.10f}"
+                    if '.' in original_str:
+                        parts = original_str.split('.')
+                        if len(parts[1]) > 5:
+                            decimal_part = parts[1]
+                            bit_at_5th = int(decimal_part[5]) if len(decimal_part) > 5 else None
+                            expected_bit = (watermark_hash_int >> (idx % 32)) & 1
+                            
+                            if bit_at_5th is not None and bit_at_5th == expected_bit:
+                                row_matched = True
+                                if verbose and numeric_matches < 5:
+                                    numeric_samples.append(f"Row {idx}, {col}: 5th decimal bit={bit_at_5th} (expected: {expected_bit})")
+                                break
+            except Exception as e:
+                if verbose and numeric_checked < 3:
+                    numeric_samples.append(f"Row {idx}, {col}: Error - {e}")
+                pass
+        
+        if checked_numeric_cols:
+            numeric_checked += 1
+            rows_checked.add(idx)
+            if row_matched:
+                numeric_matches += 1
+            elif verbose and numeric_checked <= 5:
+                first_col = checked_numeric_cols[0]
+                numeric_samples.append(f"Row {idx}, {first_col}: [MISMATCH]")
+    
     watermark_column_rate = (watermark_column_matches / watermark_column_checked * 100) if watermark_column_checked > 0 else 0.0
     timestamp_rate = (timestamp_matches / timestamp_checked * 100) if timestamp_checked > 0 else 0.0
+    numeric_rate = (numeric_matches / numeric_checked * 100) if numeric_checked > 0 else 0.0
     
     watermark_column_found = (
         watermark_column_checked >= MIN_SAMPLE_SIZE and
@@ -185,7 +259,14 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
         timestamp_rate >= TIMESTAMP_THRESHOLD * 100
     )
     
-    found = watermark_column_found or timestamp_found
+    NUMERIC_THRESHOLD = 0.15
+    numeric_found = (
+        numeric_checked >= MIN_SAMPLE_SIZE and
+        numeric_matches >= MIN_MATCH_COUNT and
+        numeric_rate >= NUMERIC_THRESHOLD * 100
+    )
+    
+    found = watermark_column_found or timestamp_found or numeric_found
     
     result = {
         "found": found,
@@ -205,16 +286,23 @@ def check_watermark(df: pd.DataFrame, buyer_id: int, share_id: int, verbose: boo
             "match_rate": timestamp_rate,
             "found": timestamp_found,
             "samples": timestamp_samples[:5] if verbose else []
+        },
+        "numeric": {
+            "matches": numeric_matches,
+            "checked": numeric_checked,
+            "match_rate": numeric_rate,
+            "found": numeric_found,
+            "samples": numeric_samples[:5] if verbose else []
         }
     }
     
     if not found:
-        if watermark_column_checked < MIN_SAMPLE_SIZE and timestamp_checked < MIN_SAMPLE_SIZE:
-            result["reason"] = f"Insufficient sample size (need {MIN_SAMPLE_SIZE}, got watermark_col={watermark_column_checked}, timestamp={timestamp_checked})"
-        elif watermark_column_matches < MIN_MATCH_COUNT and timestamp_matches < MIN_MATCH_COUNT:
-            result["reason"] = f"Insufficient matches (need {MIN_MATCH_COUNT}, got watermark_col={watermark_column_matches}, timestamp={timestamp_matches})"
-        elif not watermark_column_found and not timestamp_found:
-            result["reason"] = f"Match rates below threshold (watermark_col={watermark_column_rate:.1f}%/{WATERMARK_COL_THRESHOLD*100:.0f}%, timestamp={timestamp_rate:.1f}%/{TIMESTAMP_THRESHOLD*100:.0f}%)"
+        if watermark_column_checked < MIN_SAMPLE_SIZE and timestamp_checked < MIN_SAMPLE_SIZE and numeric_checked < MIN_SAMPLE_SIZE:
+            result["reason"] = f"Insufficient sample size (need {MIN_SAMPLE_SIZE}, got watermark_col={watermark_column_checked}, timestamp={timestamp_checked}, numeric={numeric_checked})"
+        elif watermark_column_matches < MIN_MATCH_COUNT and timestamp_matches < MIN_MATCH_COUNT and numeric_matches < MIN_MATCH_COUNT:
+            result["reason"] = f"Insufficient matches (need {MIN_MATCH_COUNT}, got watermark_col={watermark_column_matches}, timestamp={timestamp_matches}, numeric={numeric_matches})"
+        elif not watermark_column_found and not timestamp_found and not numeric_found:
+            result["reason"] = f"Match rates below threshold (watermark_col={watermark_column_rate:.1f}%/{WATERMARK_COL_THRESHOLD*100:.0f}%, timestamp={timestamp_rate:.1f}%/{TIMESTAMP_THRESHOLD*100:.0f}%, numeric={numeric_rate:.1f}%/{NUMERIC_THRESHOLD*100:.0f}%)"
     
     if anchor_columns_missing:
         result["found"] = False
