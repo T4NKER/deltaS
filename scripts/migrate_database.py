@@ -11,89 +11,80 @@ from sqlalchemy import text
 
 def migrate_database():
     print("Migrating database to add privacy features, approval workflows, and usage logging...")
-    
+
     with engine.connect() as conn:
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS risk_score FLOAT DEFAULT 0.0;
             """))
             print("Added risk_score column")
         except Exception as e:
             print(f"risk_score column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS risk_level VARCHAR DEFAULT 'low';
             """))
             print("Added risk_level column")
         except Exception as e:
             print(f"risk_level column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS detected_pii_types TEXT;
             """))
             print("Added detected_pii_types column")
         except Exception as e:
             print(f"detected_pii_types column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS sensitive_columns TEXT;
             """))
             print("Added sensitive_columns column")
         except Exception as e:
             print(f"sensitive_columns column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS requires_approval BOOLEAN DEFAULT FALSE;
             """))
             print("Added requires_approval column")
         except Exception as e:
             print(f"requires_approval column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS approval_status VARCHAR DEFAULT 'pending';
             """))
             print("Added approval_status column to shares")
         except Exception as e:
             print(f"approval_status column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS revoked BOOLEAN DEFAULT FALSE;
             """))
             print("Added revoked column to shares")
         except Exception as e:
             print(f"revoked column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP;
             """))
             print("Added revoked_at column to shares")
         except Exception as e:
             print(f"revoked_at column: {e}")
-        
-        try:
-            conn.execute(text("""
-                ALTER TABLE shares 
-                ADD COLUMN IF NOT EXISTS watermarked_table_path VARCHAR;
-            """))
-            print("Added watermarked_table_path column to shares")
-        except Exception as e:
-            print(f"watermarked_table_path column: {e}")
-        
+
         try:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -114,34 +105,34 @@ def migrate_database():
             print("Created audit_logs table")
         except Exception as e:
             print(f"audit_logs table: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS predicates_requested TEXT;
             """))
             print("Added predicates_requested column to audit_logs")
         except Exception as e:
             print(f"predicates_requested column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS predicates_applied TEXT;
             """))
             print("Added predicates_applied column to audit_logs")
         except Exception as e:
             print(f"predicates_applied column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS predicates_applied_count INTEGER;
             """))
             print("Added predicates_applied_count column to audit_logs")
         except Exception as e:
             print(f"predicates_applied_count column: {e}")
-        
+
         try:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS query_rate_limits (
@@ -156,130 +147,130 @@ def migrate_database():
             print("Created query_rate_limits table")
         except Exception as e:
             print(f"query_rate_limits table: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE users 
+                ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS delta_sharing_server_url VARCHAR;
             """))
             print("Added delta_sharing_server_url column to users")
         except Exception as e:
             print(f"delta_sharing_server_url column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 DROP COLUMN IF EXISTS s3_endpoint_id;
             """))
             print("Removed s3_endpoint_id column from datasets")
         except Exception as e:
             print(f"s3_endpoint_id column removal: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE;
             """))
             print("Added is_trial column to shares")
         except Exception as e:
             print(f"is_trial column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS trial_row_limit INTEGER;
             """))
             print("Added trial_row_limit column to shares")
         except Exception as e:
             print(f"trial_row_limit column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS trial_expires_at TIMESTAMP;
             """))
             print("Added trial_expires_at column to shares")
         except Exception as e:
             print(f"trial_expires_at column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS table_name VARCHAR;
             """))
             print("Added table_name column to datasets")
             conn.execute(text("""
-                UPDATE datasets 
-                SET table_name = name 
+                UPDATE datasets
+                SET table_name = name
                 WHERE table_name IS NULL;
             """))
             print("Populated table_name with name values for existing datasets")
         except Exception as e:
             print(f"table_name column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE datasets 
+                ALTER TABLE datasets
                 ADD COLUMN IF NOT EXISTS anchor_columns TEXT;
             """))
             print("Added anchor_columns column to datasets")
         except Exception as e:
             print(f"anchor_columns column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS anchor_columns_used TEXT;
             """))
             print("Added anchor_columns_used column to audit_logs")
         except Exception as e:
             print(f"anchor_columns_used column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS columns_returned TEXT;
             """))
             print("Added columns_returned column to audit_logs")
         except Exception as e:
             print(f"columns_returned column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS bytes_served INTEGER;
             """))
             print("Added bytes_served column to audit_logs")
         except Exception as e:
             print(f"bytes_served column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE audit_logs 
+                ALTER TABLE audit_logs
                 ADD COLUMN IF NOT EXISTS client_metadata TEXT;
             """))
             print("Added client_metadata column to audit_logs")
         except Exception as e:
             print(f"client_metadata column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS token_hash VARCHAR;
             """))
             print("Added token_hash column to shares")
         except Exception as e:
             print(f"token_hash column: {e}")
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS token_rotated_at TIMESTAMP;
             """))
             print("Added token_rotated_at column to shares")
         except Exception as e:
             print(f"token_rotated_at column: {e}")
-        
+
         try:
             conn.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_shares_token_hash ON shares(token_hash);
@@ -287,12 +278,12 @@ def migrate_database():
             print("Created index on token_hash")
         except Exception as e:
             print(f"token_hash index: {e}")
-        
+
         try:
             conn.execute(text("""
-                DO $$ 
+                DO $$
                 BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                                    WHERE table_name='shares' AND column_name='profile_json') THEN
                         ALTER TABLE shares ADD COLUMN profile_json TEXT;
                     END IF;
@@ -303,12 +294,12 @@ def migrate_database():
         except Exception as e:
             print(f"profile_json column: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                DO $$ 
+                DO $$
                 BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                                    WHERE table_name='shares' AND column_name='profile_generated_at') THEN
                         ALTER TABLE shares ADD COLUMN profile_generated_at TIMESTAMP;
                     END IF;
@@ -319,15 +310,15 @@ def migrate_database():
         except Exception as e:
             print(f"profile_generated_at column: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                DO $$ 
+                DO $$
                 BEGIN
-                    IF EXISTS (SELECT 1 FROM information_schema.columns 
-                               WHERE table_name='shares' AND column_name='token' 
+                    IF EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_name='shares' AND column_name='token'
                                AND column_name='token_hash' IS NULL) THEN
-                        UPDATE shares 
+                        UPDATE shares
                         SET token_hash = encode(sha256(token::bytea), 'hex')
                         WHERE token_hash IS NULL AND token IS NOT NULL;
                     END IF;
@@ -338,10 +329,10 @@ def migrate_database():
         except Exception as e:
             print(f"Token migration: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMP;
             """))
             print("Added last_used_at column to shares")
@@ -349,10 +340,10 @@ def migrate_database():
         except Exception as e:
             print(f"last_used_at column: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE users 
+                ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS public_key TEXT;
             """))
             print("Added public_key column to users")
@@ -360,10 +351,10 @@ def migrate_database():
         except Exception as e:
             print(f"public_key column: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ADD COLUMN IF NOT EXISTS encrypted_token TEXT;
             """))
             print("Added encrypted_token column to shares")
@@ -371,10 +362,10 @@ def migrate_database():
         except Exception as e:
             print(f"encrypted_token column: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ALTER COLUMN token DROP NOT NULL;
             """))
             print("Made token column nullable")
@@ -382,10 +373,10 @@ def migrate_database():
         except Exception as e:
             print(f"token nullable: {e}")
             conn.rollback()
-        
+
         try:
             conn.execute(text("""
-                ALTER TABLE shares 
+                ALTER TABLE shares
                 ALTER COLUMN token_hash DROP NOT NULL;
             """))
             print("Made token_hash column nullable")
@@ -393,12 +384,119 @@ def migrate_database():
         except Exception as e:
             print(f"token_hash nullable: {e}")
             conn.rollback()
-        
-        print("\nDatabase migration completed!")
-        print("Note: If columns already exist, you may see errors above. This is normal.")
-        print("Note: S3 credentials are now seller-side (environment variables), not in marketplace database.")
-        print("Note: Tokens are now hashed. Old plaintext tokens will be migrated on first use.")
+
+        try:
+            conn.execute(text("""
+                ALTER TABLE purchases
+                ADD COLUMN IF NOT EXISTS license_accepted_at TIMESTAMP;
+            """))
+            conn.execute(text("""
+                ALTER TABLE purchases
+                ADD COLUMN IF NOT EXISTS accepted_license_name VARCHAR;
+            """))
+            conn.execute(text("""
+                ALTER TABLE purchases
+                ADD COLUMN IF NOT EXISTS accepted_license_terms_hash VARCHAR;
+            """))
+            print("Added license acceptance columns to purchases")
+            conn.commit()
+        except Exception as e:
+            print(f"purchase license columns: {e}")
+            conn.rollback()
+
+        try:
+            conn.execute(text("""
+                ALTER TABLE datasets
+                ADD COLUMN IF NOT EXISTS privacy_status VARCHAR DEFAULT 'clear';
+            """))
+            conn.execute(text("""
+                ALTER TABLE datasets
+                ADD COLUMN IF NOT EXISTS privacy_summary TEXT;
+            """))
+            print("Added privacy_status and privacy_summary columns to datasets")
+            conn.commit()
+        except Exception as e:
+            print(f"privacy columns: {e}")
+            conn.rollback()
+
+        try:
+            conn.execute(text("""
+                ALTER TABLE audit_logs
+                ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(64);
+            """))
+            conn.execute(text("""
+                ALTER TABLE audit_logs
+                ADD COLUMN IF NOT EXISTS entry_hash VARCHAR(64);
+            """))
+            print("Added hash-chain columns to audit_logs")
+            conn.commit()
+        except Exception as e:
+            print(f"audit_logs hash-chain columns: {e}")
+            conn.rollback()
+
+        print("\nMarketplace DB migration done; applying seller DB migrations...")
+
+    _apply_seller_migrations()
+
+    print("\nDatabase migration completed!")
+    print("Note: If columns already exist, you may see errors above. This is normal.")
+    print("Note: S3 credentials are now seller-side (environment variables), not in marketplace database.")
+    print("Note: Tokens are hashed and encrypted tokens are stored separately.")
+    print("Note: Audit logs now carry hash-chain columns (prev_hash, entry_hash). Verify with:")
+    print("      python -m src.utils.verify_audit_chain")
+
+def _apply_seller_migrations():
+    try:
+        from src.seller.database import seller_engine, init_seller_db
+        from sqlalchemy import inspect as sa_inspect
+    except Exception as e:
+        print(f"Could not import seller engine; skipping seller migrations: {e}")
+        return
+
+    try:
+        init_seller_db()
+    except Exception as e:
+        print(f"Seller DB init (create_all) failed: {e}")
+        raise
+
+    required_columns = {
+        "seller_audit_logs": [
+            ("prev_hash", "VARCHAR(64)"),
+            ("entry_hash", "VARCHAR(64)"),
+        ],
+        "seller_shares": [
+            ("watermark_nonce", "VARCHAR"),
+            ("buyer_public_key_hash", "VARCHAR"),
+        ],
+    }
+
+    inspector = sa_inspect(seller_engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table_name, cols in required_columns.items():
+        if table_name not in existing_tables:
+            print(f"Seller DB: table {table_name} not found after init; skipping")
+            continue
+
+        existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+        missing = [(name, coltype) for (name, coltype) in cols if name not in existing_cols]
+        if not missing:
+            print(f"Seller DB: {table_name} already has all required columns")
+            continue
+
+        with seller_engine.connect() as conn:
+            try:
+                for col_name, col_type in missing:
+                    conn.execute(text(
+                        f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+                    ))
+                conn.commit()
+                added = ", ".join(n for n, _ in missing)
+                print(f"Seller DB: added columns to {table_name}: {added}")
+            except Exception as e:
+                conn.rollback()
+                print(f"Seller DB migration FAILED on {table_name}: {e}")
+                raise
 
 if __name__ == "__main__":
     migrate_database()
-

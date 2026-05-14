@@ -1,16 +1,14 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
-from jose import JWTError, jwt
 import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from src.models.database import SessionLocal, User, get_db
+from src.models.database import User, get_db
+from src.utils.marketplace_jwt import JWTError, decode_marketplace_jwt, encode_marketplace_jwt
 from src.utils.settings import get_settings
 
 settings = get_settings()
-SECRET_KEY = settings.JWT_SECRET_KEY
-ALGORITHM = settings.JWT_ALGORITHM
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -26,15 +24,7 @@ def get_password_hash(password: str) -> str:
     return hashed.decode('utf-8')
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
+    return encode_marketplace_jwt(data, expires_delta=expires_delta)
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
@@ -43,7 +33,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode_marketplace_jwt(token)
         user_id_str = payload.get("sub")
         if user_id_str is None:
             raise credentials_exception
@@ -70,4 +60,3 @@ async def get_current_buyer(current_user: User = Depends(get_current_user)) -> U
             detail="Not enough permissions"
         )
     return current_user
-

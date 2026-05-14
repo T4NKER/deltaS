@@ -10,6 +10,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init_databases.sql:/docker-entrypoint-initdb.d/init_databases.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U deltasharing -d marketplace"]
       interval: 10s
@@ -19,7 +20,7 @@ services:
       - delta-sharing-network
 
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:3.8
     container_name: delta-sharing-localstack
     environment:
       - SERVICES=s3
@@ -53,11 +54,15 @@ services:
     container_name: delta-sharing-marketplace
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://deltasharing:deltasharing123@postgres:5432/marketplace
       PYTHONPATH: /app
       DOCKER_ENV: "true"
-      ALLOW_INSECURE_DEFAULTS: "true"
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-false}"
+      MARKETPLACE_JWT_PRIVATE_KEY: ${MARKETPLACE_JWT_PRIVATE_KEY}
+      MARKETPLACE_JWT_PUBLIC_KEY: ${MARKETPLACE_JWT_PUBLIC_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,17 +79,27 @@ services:
     container_name: delta-sharing-seller
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql://deltasharing:deltasharing123@postgres:5432/marketplace
+      SELLER_DATABASE_URL: postgresql://deltasharing:deltasharing123@postgres:5432/seller_db
       PYTHONPATH: /app
       DOCKER_ENV: "true"
-      ALLOW_INSECURE_DEFAULTS: "true"
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-false}"
       SELLER_SERVER_URL: ${SELLER_SERVER_URL:-http://seller:8080}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://localstack:4566}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-test}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-test}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-test-delta-bucket}
       S3_REGION: ${S3_REGION:-us-east-1}
+      SELLER_JWT_SECRET_KEY: ${SELLER_JWT_SECRET_KEY}
+      DELIVERY_TOKEN_SECRET_KEY: ${DELIVERY_TOKEN_SECRET_KEY}
+      MARKETPLACE_JWT_PUBLIC_KEY: ${MARKETPLACE_JWT_PUBLIC_KEY}
+      SELLER_METADATA_SIGNING_PRIVATE_KEY: ${SELLER_METADATA_SIGNING_PRIVATE_KEY}
+      SELLER_METADATA_SIGNING_PUBLIC_KEY: ${SELLER_METADATA_SIGNING_PUBLIC_KEY}
+      WATERMARK_SECRET: ${WATERMARK_SECRET}
+      TOKEN_SIGNING_SECRET: ${TOKEN_SIGNING_SECRET}
+      TOKEN_SALT: ${TOKEN_SALT}
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,10 +117,15 @@ services:
       context: .
       dockerfile: Dockerfile.buyer
     container_name: delta-sharing-buyer
+    env_file:
+      - .env
     environment:
       MARKETPLACE_URL: http://marketplace:8000
       DELTA_SHARING_SERVER_URL: http://seller:8080
+      LOCALSTACK_HEALTH_URL: http://localstack:4566/_localstack/health
       PYTHONPATH: /app
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-false}"
+      MARKETPLACE_JWT_PUBLIC_KEY: ${MARKETPLACE_JWT_PUBLIC_KEY}
     depends_on:
       marketplace:
         condition: service_started
@@ -120,27 +140,9 @@ services:
     stdin_open: true
     tty: true
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: delta-sharing-pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@admin.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    ports:
-      - "5051:80"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - delta-sharing-network
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
-
 volumes:
   postgres-data:
   localstack-data:
-  pgadmin-data:
 
 networks:
   delta-sharing-network:

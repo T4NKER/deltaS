@@ -25,7 +25,7 @@ def fix_endpoint_url_for_client(endpoint_url: str) -> str:
 def get_s3_client():
     endpoint_url, access_key, secret_key, region = _get_s3_config()
     endpoint_url = fix_endpoint_url_for_docker(endpoint_url) if endpoint_url else None
-    
+
     return boto3.client(
         's3',
         endpoint_url=endpoint_url,
@@ -38,7 +38,7 @@ def get_s3_client():
 def get_delta_storage_options() -> dict:
     endpoint_url, access_key, secret_key, region = _get_s3_config()
     endpoint_url = fix_endpoint_url_for_docker(endpoint_url) if endpoint_url else None
-    
+
     return {
         'AWS_ACCESS_KEY_ID': access_key,
         'AWS_SECRET_ACCESS_KEY': secret_key,

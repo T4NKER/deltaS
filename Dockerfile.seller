@@ -15,7 +15,6 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 
 ENV PYTHONPATH=/app
-ENV DATABASE_URL=postgresql://deltasharing:deltasharing123@postgres:5432/marketplace
 ENV DOCKER_ENV=true
 
 EXPOSE 8080

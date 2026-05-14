@@ -21,7 +21,7 @@ def convert_to_native_types(obj: Any) -> Any:
 def normalize_value_for_anchor(value, dtype):
     if pd.isna(value):
         return 'NULL'
-    
+
     if pd.api.types.is_integer_dtype(dtype):
         return str(int(value))
     elif pd.api.types.is_float_dtype(dtype):

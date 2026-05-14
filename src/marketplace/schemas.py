@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
@@ -16,23 +16,27 @@ class Token(BaseModel):
     token_type: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     email: str
     role: str
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 class DatasetMetadataBundle(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     version: str
     seller_id: int
     name: str
     description: Optional[str] = None
     table_path: str
-    schema: dict
+    license_name: Optional[str] = None
+    license_terms: Optional[str] = None
+    schema_: dict = Field(alias="schema")
     anchor_columns: list
     pii_analysis: dict
+    privacy_assessment: Optional[dict] = None
     sample_row_count: Optional[int] = None
     total_row_count: Optional[int] = None
     published_at: str
@@ -43,11 +47,15 @@ class DatasetCreate(BaseModel):
     description: Optional[str] = None
     table_path: str
     price: float = 0.0
+    license_name: Optional[str] = None
+    license_terms: Optional[str] = None
     is_public: bool = False
     anchor_columns: Optional[str] = None
     metadata_bundle: Optional[DatasetMetadataBundle] = None
 
 class DatasetResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     description: Optional[str]
@@ -58,11 +66,13 @@ class DatasetResponse(BaseModel):
     created_at: datetime
     risk_score: Optional[float]
     risk_level: Optional[str]
-    
-    class Config:
-        from_attributes = True
+
+class PurchaseRequest(BaseModel):
+    accept_license: bool = False
 
 class PurchaseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     buyer_id: int
     dataset_id: int
@@ -72,15 +82,16 @@ class PurchaseResponse(BaseModel):
     encrypted_token: Optional[str] = None
     approval_status: str
     seller_server_url: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
+    license_accepted_at: Optional[datetime] = None
+    accepted_license_name: Optional[str] = None
 
 class TrialRequest(BaseModel):
     row_limit: Optional[int] = 100
     days_valid: Optional[int] = 7
 
 class TrialResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     buyer_id: int
     dataset_id: int
@@ -91,31 +102,13 @@ class TrialResponse(BaseModel):
     is_trial: bool
     trial_row_limit: Optional[int]
     trial_expires_at: Optional[datetime]
-    
-    class Config:
-        from_attributes = True
 
 class ProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     share_id: int
     profile_json: str
     generated_at: datetime
-    
-    class Config:
-        from_attributes = True
-
-class PublishMetadataRequest(BaseModel):
-    table_path: str
-    name: str
-    description: Optional[str] = None
-    anchor_columns: Optional[str] = None
-
-class SyntheticDataRequest(BaseModel):
-    table_path: str
-    output_table_path: str
-    num_rows: int
-    dp_epsilon: Optional[float] = None
-    preserve_statistics: bool = True
-    seed: Optional[int] = None
 
 class DeltaSharingServerUrlRequest(BaseModel):
     server_url: str
@@ -126,6 +119,13 @@ class PublicKeyRegistrationRequest(BaseModel):
 class PublicKeyRegistrationResponse(BaseModel):
     status: str
     message: str
+    public_key: str
+
+class DeltaSharingServerUrlResponse(BaseModel):
+    delta_sharing_server_url: Optional[str] = None
+
+class BuyerPublicKeyResponse(BaseModel):
+    public_key: str
 
 class ShareResponse(BaseModel):
     id: int
@@ -144,7 +144,6 @@ class TokenRotationResponse(BaseModel):
     status: str
     message: str
     share_id: int
-    new_token: Optional[str] = None
     rotation_recommended: Optional[bool] = None
 
 class ApprovalResponse(BaseModel):
@@ -178,20 +177,3 @@ class UsageLogResponse(BaseModel):
     row_count_returned: Optional[int]
     query_limit: Optional[int]
     ip_address: Optional[str]
-
-class FileDownloadRequest(BaseModel):
-    expiry_hours: int = 24
-
-class FileDownloadResponse(BaseModel):
-    download_url: str
-    download_token: str
-    expires_at: str
-    snapshot_id: str
-    file_size_bytes: int
-    rows: int
-    columns: list
-
-class FileDownloadRevokeResponse(BaseModel):
-    status: str
-    message: str
-

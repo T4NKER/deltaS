@@ -19,15 +19,15 @@ class PredicateNode:
 
 def parse_predicate_string(predicate_str: str) -> PredicateNode:
     predicate_str = predicate_str.strip()
-    
+
     if " IS NOT NULL" in predicate_str.upper():
         column = predicate_str[:predicate_str.upper().index(" IS NOT NULL")].strip()
         return PredicateNode("IS NOT NULL", column)
-    
+
     if " IS NULL" in predicate_str.upper():
         column = predicate_str[:predicate_str.upper().index(" IS NULL")].strip()
         return PredicateNode("IS NULL", column)
-    
+
     for op in ["!=", ">=", "<=", "=", ">", "<"]:
         if f" {op} " in predicate_str:
             parts = predicate_str.split(f" {op} ", 1)
@@ -36,7 +36,7 @@ def parse_predicate_string(predicate_str: str) -> PredicateNode:
                 value_str = parts[1].strip()
                 value = parse_value(value_str)
                 return PredicateNode(op, column, value=value)
-    
+
     if " IN " in predicate_str.upper():
         match = re.match(r'^(.+?)\s+IN\s+\((.+)\)$', predicate_str, re.IGNORECASE)
         if match:
@@ -44,24 +44,24 @@ def parse_predicate_string(predicate_str: str) -> PredicateNode:
             values_str = match.group(2).strip()
             values = parse_in_list(values_str)
             return PredicateNode("IN", column, values=values)
-    
+
     raise HTTPException(status_code=400, detail=f"Unsupported predicate format: {predicate_str}")
 
 def parse_value(value_str: str) -> Any:
     value_str = value_str.strip()
-    
+
     if value_str.startswith("'") and value_str.endswith("'"):
         return value_str[1:-1]
     if value_str.startswith('"') and value_str.endswith('"'):
         return value_str[1:-1]
-    
+
     if value_str.upper() == "TRUE":
         return True
     if value_str.upper() == "FALSE":
         return False
     if value_str.upper() == "NULL":
         return None
-    
+
     try:
         if '.' in value_str:
             return float(value_str)
@@ -74,7 +74,7 @@ def parse_in_list(values_str: str) -> List[Any]:
     current = ""
     in_quotes = False
     quote_char = None
-    
+
     for char in values_str:
         if char in ("'", '"') and (not in_quotes or char == quote_char):
             if not in_quotes:
@@ -90,19 +90,19 @@ def parse_in_list(values_str: str) -> List[Any]:
             current = ""
         else:
             current += char
-    
+
     if current.strip():
         values.append(parse_value(current.strip()))
-    
+
     return values
 
 def parse_predicate_hints(predicate_hints: Union[List[str], str]) -> List[PredicateNode]:
     if isinstance(predicate_hints, str):
         predicate_hints = [predicate_hints]
-    
+
     if len(predicate_hints) > MAX_PREDICATES:
         raise HTTPException(status_code=400, detail=f"Too many predicates (max {MAX_PREDICATES})")
-    
+
     predicates = []
     for hint in predicate_hints:
         try:
@@ -111,32 +111,32 @@ def parse_predicate_hints(predicate_hints: Union[List[str], str]) -> List[Predic
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid predicate: {hint}. Error: {str(e)}")
-    
+            raise HTTPException(status_code=400, detail=f"Invalid predicate: {hint}")
+
     return predicates
 
 def parse_json_predicate_hints(json_predicates: Union[List[Dict], Dict]) -> List[PredicateNode]:
     if isinstance(json_predicates, dict):
         json_predicates = [json_predicates]
-    
+
     if len(json_predicates) > MAX_PREDICATES:
         raise HTTPException(status_code=400, detail=f"Too many predicates (max {MAX_PREDICATES})")
-    
+
     predicates = []
     for pred_dict in json_predicates:
         if not isinstance(pred_dict, dict):
             raise HTTPException(status_code=400, detail=f"Invalid JSON predicate format: {pred_dict}")
-        
+
         column = pred_dict.get("column") or pred_dict.get("col")
         op = pred_dict.get("op") or pred_dict.get("operator")
         value = pred_dict.get("value")
         values = pred_dict.get("values")
-        
+
         if not column:
             raise HTTPException(status_code=400, detail="Missing 'column' in JSON predicate")
         if not op:
             raise HTTPException(status_code=400, detail="Missing 'op' in JSON predicate")
-        
+
         if op.upper() in ["IS NULL", "IS NOT NULL"]:
             predicates.append(PredicateNode(op.upper(), column))
         elif op.upper() == "IN":
@@ -149,25 +149,25 @@ def parse_json_predicate_hints(json_predicates: Union[List[Dict], Dict]) -> List
             if value is None:
                 raise HTTPException(status_code=400, detail=f"Operator {op} requires 'value'")
             predicates.append(PredicateNode(op, column, value=value))
-    
+
     return predicates
 
 def validate_predicates(predicates: List[PredicateNode], schema: pa.Schema) -> None:
     schema_columns = set(schema.names)
-    
+
     for predicate in predicates:
         if predicate.column not in schema_columns:
             raise HTTPException(status_code=400, detail=f"Column '{predicate.column}' not found in table schema")
-        
+
         if predicate.op not in SUPPORTED_COMPARISON_OPS + SUPPORTED_SET_OPS + SUPPORTED_NULL_OPS:
             raise HTTPException(status_code=400, detail=f"Unsupported operator: {predicate.op}")
-        
+
         if predicate.op == "IN" and len(predicate.values) > MAX_IN_LIST_SIZE:
             raise HTTPException(status_code=400, detail=f"IN list too large (max {MAX_IN_LIST_SIZE})")
 
 def predicate_to_pyarrow_expr(predicate: PredicateNode) -> ds.Expression:
     field = ds.field(predicate.column)
-    
+
     if predicate.op == "=":
         return field == predicate.value
     elif predicate.op == "!=":
@@ -192,18 +192,18 @@ def predicate_to_pyarrow_expr(predicate: PredicateNode) -> ds.Expression:
 def predicates_to_pyarrow_filter(predicates: List[PredicateNode], schema: pa.Schema) -> Optional[ds.Expression]:
     if not predicates:
         return None
-    
+
     validate_predicates(predicates, schema)
-    
+
     expressions = [predicate_to_pyarrow_expr(pred) for pred in predicates]
-    
+
     if len(expressions) == 1:
         return expressions[0]
-    
+
     result = expressions[0]
     for expr in expressions[1:]:
         result = result & expr
-    
+
     return result
 
 def parse_query_predicates(body: Dict[str, Any], schema: Any) -> Tuple[Optional[ds.Expression], List[PredicateNode]]:
@@ -221,13 +221,13 @@ def parse_query_predicates(body: Dict[str, Any], schema: Any) -> Tuple[Optional[
                     detail=f"Cannot convert schema to PyArrow Schema. Got type: {type(schema)}. "
                            f"Please pass a PyArrow Schema (pa.Schema) or an object with to_arrow()/to_pyarrow() method."
                 )
-            
+
             if not isinstance(converted, pa.Schema):
                 raise HTTPException(
                     status_code=500,
                     detail=f"Schema conversion returned non-PyArrow type: {type(converted)}"
                 )
-            
+
             schema = converted
         except HTTPException:
             raise
@@ -236,17 +236,17 @@ def parse_query_predicates(body: Dict[str, Any], schema: Any) -> Tuple[Optional[
                 status_code=500,
                 detail=f"Failed to convert schema to PyArrow Schema: {str(e)}. Got type: {type(schema)}"
             )
-    
+
     predicates = []
-    
+
     if "jsonPredicateHints" in body:
         predicates = parse_json_predicate_hints(body["jsonPredicateHints"])
     elif "predicateHints" in body:
         predicates = parse_predicate_hints(body["predicateHints"])
-    
+
     if not predicates:
         return None, []
-    
+
     filter_expr = predicates_to_pyarrow_filter(predicates, schema)
     return filter_expr, predicates
 

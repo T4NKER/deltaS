@@ -4,7 +4,7 @@ set -e
 
 echo "This will:"
 echo "  1. Stop all Docker containers"
-echo "  2. Remove all Docker volumes (postgres, localstack, pgadmin)"
+echo "  2. Remove all Docker volumes (postgres, localstack)"
 echo "  3. Remove all data"
 echo ""
 read -p "continue? (yes/no): " confirm
@@ -16,7 +16,7 @@ fi
 
 echo ""
 echo "Stopping containers and removing volumes"
-docker-compose down -v
+docker compose --profile testing down -v
 
 echo ""
 echo "Cleaning up any orphaned volumes"
@@ -24,7 +24,7 @@ docker volume prune -f
 
 echo ""
 echo "Starting containers"
-docker-compose up -d postgres localstack
+docker compose --profile testing up -d postgres localstack
 
 echo ""
 echo "Waiting for PostgreSQL to be ready"
@@ -49,7 +49,7 @@ fi
 echo ""
 echo "Data migration autorun on startup"
 echo "Starting all services"
-docker-compose up -d
+docker compose --profile testing up -d
 
 echo ""
 echo "Reset complete"

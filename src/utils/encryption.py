@@ -3,7 +3,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from typing import Optional
+
+MIN_RSA_KEY_BITS = 2048
 
 def generate_key_pair():
     private_key = rsa.generate_private_key(
@@ -12,18 +13,18 @@ def generate_key_pair():
         backend=default_backend()
     )
     public_key = private_key.public_key()
-    
+
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption()
     )
-    
+
     public_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
-    
+
     return {
         'private_key': base64.b64encode(private_pem).decode('utf-8'),
         'public_key': base64.b64encode(public_pem).decode('utf-8')
@@ -34,7 +35,7 @@ def encrypt_token(token: str, public_key_pem: str) -> str:
         public_key_pem.encode('utf-8'),
         backend=default_backend()
     )
-    
+
     encrypted = public_key.encrypt(
         token.encode('utf-8'),
         padding.OAEP(
@@ -43,7 +44,7 @@ def encrypt_token(token: str, public_key_pem: str) -> str:
             label=None
         )
     )
-    
+
     return base64.b64encode(encrypted).decode('utf-8')
 
 def decrypt_token(encrypted_token: str, private_key_pem: str) -> str:
@@ -53,9 +54,9 @@ def decrypt_token(encrypted_token: str, private_key_pem: str) -> str:
         password=None,
         backend=default_backend()
     )
-    
+
     encrypted_bytes = base64.b64decode(encrypted_token.encode('utf-8'))
-    
+
     decrypted = private_key.decrypt(
         encrypted_bytes,
         padding.OAEP(
@@ -64,15 +65,19 @@ def decrypt_token(encrypted_token: str, private_key_pem: str) -> str:
             label=None
         )
     )
-    
+
     return decrypted.decode('utf-8')
 
 def validate_public_key(public_key_pem: str) -> bool:
     try:
-        serialization.load_pem_public_key(
+        key = serialization.load_pem_public_key(
             public_key_pem.encode('utf-8'),
             backend=default_backend()
         )
+        if not isinstance(key, rsa.RSAPublicKey):
+            return False
+        if key.key_size < MIN_RSA_KEY_BITS:
+            return False
         return True
     except Exception:
         return False
